@@ -6,12 +6,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Grover is a PDF document search and RAG (Retrieval-Augmented Generation) system for financial product documents from Westpac Group brands (Westpac/WBC, St.George/SGB, BankSA/BSA, Bank of Melbourne/BOM). It ingests PDFs, builds ONNX vector embeddings + a knowledge graph, and supports semantic search, LLM-powered Q&A, and a web UI with graph visualization.
 
-The entire application lives in a single file: `search.js` (~2000 lines, CommonJS).
+The application entry point is `search.js` (thin CLI dispatcher) with modular source code under `src/` (CommonJS).
 
 ## Commands
 
 ```bash
-# Ingest PDFs from ./docs into vector index + knowledge graph
+# Ingest PDFs from ./corpus into vector index + knowledge graph
 node search.js ingest
 
 # Incremental update (new/modified/deleted PDFs only)
@@ -46,7 +46,7 @@ There is no build step, no linter, and no test suite configured.
 
 ### Data Flow
 
-1. **Ingest**: PDFs in `./docs` → Python (`pymupdf`) text extraction → page-aware chunking (1000 char, 200 overlap) → ONNX embeddings via `ruvector` → knowledge graph construction → persisted to `./index/`
+1. **Ingest**: PDFs in `./corpus` → Python (`pymupdf`) text extraction → page-aware chunking (1000 char, 200 overlap) → ONNX embeddings via `ruvector` → knowledge graph construction → persisted to `./index/`
 2. **Search**: Query → ONNX embedding → brute-force cosine distance against all chunks → knowledge graph expansion (entity co-occurrence, cross-doc similarity) → ranked results
 3. **RAG**: Search results → formatted context + conversation memory → OpenAI-compatible chat completion → answer with source citations
 
@@ -74,9 +74,11 @@ Edges encode: `part_of`, `contains`, `belongs_to_brand`, `in_category`, `mention
 ### File Layout
 
 ```
-search.js           — Entire application (CLI, server, ingestion, search, RAG, graph, memory)
+search.js           — CLI dispatcher (delegates to src/commands/)
+src/                — Modular source code (config, utils, graph, memory, llm, retrieval, commands, server)
 graph-viz.html      — vis-network graph visualization template (served by web UI)
-docs/               — Source PDFs organized by brand/category (docs/Westpac/{bom,bsa,sgb,wbc}/{fx,irrm,...}/)
+corpus/             — Source PDFs organized by brand/category (corpus/Westpac/{bom,bsa,sgb,wbc}/{fx,irrm,...}/)
+docs/               — System documentation (design docs)
 index/              — Generated index files (embeddings.bin, metadata.json, graph.json, memory.json)
 ```
 
