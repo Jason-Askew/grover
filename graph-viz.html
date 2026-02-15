@@ -1,0 +1,734 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Knowledge Graph — RuVector</title>
+<script src="https://unpkg.com/vis-network@9.1.6/standalone/umd/vis-network.min.js"></script>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #F3F4F6;
+    color: #333;
+    font-family: 'Inter', sans-serif;
+    overflow: hidden;
+    height: 100vh;
+  }
+
+  /* ── Control panel (left) ── */
+  .control-panel {
+    position: absolute;
+    top: 0; left: 0; bottom: 0;
+    width: 280px;
+    background: #fff;
+    border-right: 1px solid #e0e0e0;
+    display: flex;
+    flex-direction: column;
+    z-index: 50;
+    overflow: hidden;
+  }
+  .cp-header {
+    padding: 14px 16px;
+    border-bottom: 1px solid #e8e8e8;
+    font-size: 13px;
+    font-weight: 600;
+    color: #333;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-shrink: 0;
+  }
+  .cp-header .cp-stats { font-weight: 400; font-size: 11px; color: #999; }
+  .cp-body {
+    flex: 1;
+    overflow-y: auto;
+    padding-bottom: 12px;
+  }
+  .cp-body::-webkit-scrollbar { width: 4px; }
+  .cp-body::-webkit-scrollbar-thumb { background: #ddd; border-radius: 2px; }
+
+  /* ── Section ── */
+  .cp-section {
+    border-bottom: 1px solid #f0f0f0;
+  }
+  .cp-section-header {
+    display: flex;
+    align-items: center;
+    padding: 10px 16px;
+    cursor: pointer;
+    user-select: none;
+    gap: 8px;
+    transition: background 0.1s;
+  }
+  .cp-section-header:hover { background: #f8f9fa; }
+  .cp-section-header .cp-chevron {
+    font-size: 10px; color: #aaa;
+    transition: transform 0.2s;
+    width: 12px; text-align: center;
+    flex-shrink: 0;
+  }
+  .cp-section.open .cp-chevron { transform: rotate(90deg); }
+  .cp-section-header .cp-dot {
+    width: 10px; height: 10px;
+    border-radius: 50%; flex-shrink: 0;
+  }
+  .cp-section-header .cp-section-label {
+    flex: 1; font-size: 12px; font-weight: 500;
+  }
+  .cp-section-header .cp-count {
+    font-size: 10px; color: #aaa; flex-shrink: 0;
+  }
+  .cp-toggle {
+    width: 30px; height: 16px;
+    border-radius: 8px;
+    background: #ddd;
+    position: relative;
+    cursor: pointer;
+    transition: background 0.2s;
+    flex-shrink: 0;
+  }
+  .cp-toggle.on { background: #4a8eda; }
+  .cp-toggle::after {
+    content: '';
+    position: absolute;
+    top: 2px; left: 2px;
+    width: 12px; height: 12px;
+    border-radius: 50%;
+    background: #fff;
+    transition: transform 0.2s;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.15);
+  }
+  .cp-toggle.on::after { transform: translateX(14px); }
+
+  /* ── Value list ── */
+  .cp-values {
+    display: none;
+    padding: 0 16px 8px;
+  }
+  .cp-section.open .cp-values { display: block; }
+  .cp-filter-input {
+    width: 100%;
+    padding: 5px 8px;
+    border: 1px solid #e0e0e0;
+    border-radius: 4px;
+    font-size: 11px;
+    outline: none;
+    margin-bottom: 6px;
+    color: #333;
+    background: #fafafa;
+  }
+  .cp-filter-input:focus { border-color: #4a8eda; }
+  .cp-filter-input::placeholder { color: #bbb; }
+  .cp-value-list {
+    max-height: 200px;
+    overflow-y: auto;
+  }
+  .cp-value-list::-webkit-scrollbar { width: 3px; }
+  .cp-value-list::-webkit-scrollbar-thumb { background: #e0e0e0; border-radius: 2px; }
+  .cp-value-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 0;
+    font-size: 11px;
+    color: #555;
+    cursor: pointer;
+    user-select: none;
+  }
+  .cp-value-item:hover { color: #111; }
+  .cp-value-item .cp-check {
+    width: 14px; height: 14px;
+    border-radius: 3px;
+    border: 1px solid #ccc;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 9px; color: #fff;
+    flex-shrink: 0;
+    transition: all 0.15s;
+  }
+  .cp-value-item.on .cp-check {
+    background: #4a8eda;
+    border-color: #3a7bd5;
+  }
+  .cp-value-item .cp-value-label {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .cp-select-all {
+    font-size: 10px;
+    color: #4a8eda;
+    cursor: pointer;
+    margin-bottom: 4px;
+    display: inline-block;
+  }
+  .cp-select-all:hover { text-decoration: underline; }
+
+  /* ── Relationship sections ── */
+  .cp-divider {
+    padding: 8px 16px 4px;
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: #aaa;
+    background: #fafafa;
+    border-bottom: 1px solid #f0f0f0;
+  }
+
+  /* ── Graph container ── */
+  #graph-container {
+    position: absolute;
+    top: 0; left: 280px; bottom: 0; right: 420px;
+    background: #F3F4F6;
+  }
+  #graph-container > div { width: 100%; height: 100%; }
+
+  /* Click tooltip */
+  .node-tooltip {
+    position: absolute;
+    z-index: 100;
+    background: linear-gradient(135deg, var(--tt-primary, #555), var(--tt-secondary, #777));
+    color: #fff;
+    padding: 12px 14px;
+    border-radius: 6px;
+    max-width: 380px;
+    font-size: 13px;
+    line-height: 1.5;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.25);
+    display: none;
+    word-break: break-word;
+  }
+  .node-tooltip.visible { display: block; }
+  .node-tooltip .tt-close {
+    position: absolute; top: 4px; right: 6px;
+    background: transparent; border: none;
+    color: rgba(255,255,255,0.7); font-size: 16px; cursor: pointer;
+  }
+  .node-tooltip .tt-close:hover { color: #fff; }
+  .node-tooltip .tt-row { margin-bottom: 3px; }
+  .node-tooltip .tt-row strong { opacity: 0.85; }
+  .node-tooltip .tt-matched {
+    margin-top: 6px; padding-top: 6px;
+    border-top: 1px solid rgba(255,255,255,0.2);
+    font-size: 12px; color: #f0c850;
+  }
+
+  /* Path info bar */
+  .path-info {
+    position: absolute;
+    bottom: 12px; left: 12px; right: 12px;
+    z-index: 100;
+    padding: 8px 14px;
+    background: rgba(0,0,0,0.7);
+    backdrop-filter: blur(8px);
+    border-radius: 6px;
+    font-size: 11px;
+    display: none;
+    align-items: center; gap: 6px; flex-wrap: wrap;
+  }
+  .path-info.visible { display: flex; }
+  .path-info .path-label { color: #f0c850; font-weight: 600; text-transform: uppercase; font-size: 10px; letter-spacing: 0.06em; }
+  .path-info .path-node { padding: 2px 7px; border-radius: 3px; font-size: 10px; white-space: nowrap; color: #fff; }
+  .path-info .path-arrow { color: rgba(255,255,255,0.3); }
+  .path-info .path-clear {
+    margin-left: auto;
+    background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.2);
+    color: rgba(255,255,255,0.6); padding: 2px 10px; border-radius: 3px; cursor: pointer;
+    font-size: 10px;
+  }
+  .path-info .path-clear:hover { color: #fff; border-color: rgba(255,255,255,0.5); }
+
+  .loading {
+    position: fixed; inset: 0; z-index: 500;
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    background: #F3F4F6; gap: 16px; transition: opacity 0.5s;
+  }
+  .loading.hidden { opacity: 0; pointer-events: none; }
+  .loading-spinner {
+    width: 36px; height: 36px;
+    border: 2px solid #ddd; border-top-color: #888;
+    border-radius: 50%; animation: spin 0.8s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .loading-text { font-size: 13px; color: #888; }
+</style>
+</head>
+<body>
+
+<div class="loading" id="loading">
+  <div class="loading-spinner"></div>
+  <div class="loading-text">Initializing graph...</div>
+</div>
+
+<!-- Left control panel -->
+<div class="control-panel" id="control-panel">
+  <div class="cp-header">
+    <span>Filters</span>
+    <span class="cp-stats" id="cp-stats"></span>
+  </div>
+  <div class="cp-body" id="cp-body">
+    <!-- populated by JS -->
+  </div>
+</div>
+
+<div id="graph-container">
+  <div id="vis-canvas"></div>
+
+  <div class="node-tooltip" id="node-tooltip">
+    <button class="tt-close" onclick="hideTooltip()">×</button>
+    <div id="tt-content"></div>
+  </div>
+
+  <div class="path-info" id="path-info">
+    <span class="path-label">Path</span>
+    <span id="path-chain"></span>
+    <button class="path-clear" onclick="clearPath()">Clear</button>
+  </div>
+</div>
+
+<script>
+// ── Brand themes ────────────────────────────────────
+const BRAND_THEMES = {
+  wbc: { label: 'Westpac', primary: '#D52B1E', secondary: '#E34A2B',
+    colors: { brand:{bg:'#D52B1E',size:60},category:{bg:'#ED6758',size:60},document:{bg:'#F18285',size:20},product:{bg:'#F99DAF',size:40},concept:{bg:'#FFB7D2',size:30} },
+    edges: { belongs_to_brand:'#D52B1E',in_category:'#E34A2B',mentions:'#F18285' } },
+  sgb: { label: 'St.George', primary: '#00853E', secondary: '#00A64F',
+    colors: { brand:{bg:'#00853E',size:60},category:{bg:'#33A066',size:60},document:{bg:'#66BB8E',size:20},product:{bg:'#99D5B5',size:40},concept:{bg:'#BFE9C1',size:30} },
+    edges: { belongs_to_brand:'#00853E',in_category:'#00A64F',mentions:'#66BB8E' } },
+  bom: { label: 'Bank of Melbourne', primary: '#6A1B9A', secondary: '#8E24AA',
+    colors: { brand:{bg:'#6A1B9A',size:60},category:{bg:'#8844AA',size:60},document:{bg:'#A66DC0',size:20},product:{bg:'#C496D6',size:40},concept:{bg:'#D1C4E9',size:30} },
+    edges: { belongs_to_brand:'#6A1B9A',in_category:'#8E24AA',mentions:'#A66DC0' } },
+  bsa: { label: 'BankSA', primary: '#00AEEF', secondary: '#0077C8',
+    colors: { brand:{bg:'#00AEEF',size:60},category:{bg:'#33BBEE',size:60},document:{bg:'#66CCEE',size:20},product:{bg:'#99DDEE',size:40},concept:{bg:'#B3E5FC',size:30} },
+    edges: { belongs_to_brand:'#00AEEF',in_category:'#0077C8',mentions:'#66CCEE' } },
+};
+const DEFAULT_COLORS = { brand:{bg:'#555',size:60},category:{bg:'#777',size:60},document:{bg:'#999',size:20},product:{bg:'#AAA',size:40},concept:{bg:'#BBB',size:30} };
+const MATCH_COLOR = '#f0c850';
+
+const NODE_TYPE_META = {
+  brand:    { label: 'Brands',     color: '#e86c5f' },
+  category: { label: 'Categories', color: '#e8a84c' },
+  document: { label: 'Documents',  color: '#4a8eda' },
+  product:  { label: 'Products',   color: '#6dd490' },
+  concept:  { label: 'Concepts',   color: '#b07de8' },
+};
+
+const EDGE_TYPE_META = {
+  belongs_to_brand: { label: 'belongs_to_brand', color: '#e86c5f' },
+  in_category:      { label: 'in_category',      color: '#e8a84c' },
+  mentions:         { label: 'mentions',          color: '#6dd490' },
+};
+
+let graphData = null, network = null, visNodes = null, visEdges = null;
+let allVisNodes = [], allVisEdges = [], matchedDocIds = new Set();
+
+// Filter state
+let filterState = {
+  nodeTypes: {},   // type -> boolean
+  edgeTypes: {},   // type -> boolean
+  nodeValues: {},  // type -> { value -> boolean }
+};
+
+// ── Init ────────────────────────────────────────────
+
+function initGraph(data) {
+  graphData = data;
+  document.getElementById('loading').classList.add('hidden');
+  data.nodeMap = {};
+  data.nodes.forEach(n => { data.nodeMap[n.id] = n; });
+
+  initFilterState(data);
+  buildControlPanel(data);
+  buildNetwork(data);
+  updateStats();
+}
+
+function initFilterState(data) {
+  // Node types
+  const nodeTypes = new Set(data.nodes.map(n => n.type));
+  nodeTypes.forEach(t => {
+    filterState.nodeTypes[t] = true;
+    filterState.nodeValues[t] = {};
+  });
+
+  // Collect unique values per type
+  data.nodes.forEach(n => {
+    const label = n.type === 'document'
+      ? n.label.split('/').pop().replace('.pdf','')
+      : n.label;
+    filterState.nodeValues[n.type][n.id] = { label, fullLabel: n.label, enabled: true };
+  });
+
+  // Edge types
+  const edgeTypes = new Set(data.edges.map(e => e.type));
+  edgeTypes.forEach(t => { filterState.edgeTypes[t] = true; });
+}
+
+// ── Control Panel ───────────────────────────────────
+
+function buildControlPanel(data) {
+  const body = document.getElementById('cp-body');
+  let html = '';
+
+  // Node type sections
+  html += '<div class="cp-divider">Node Types</div>';
+  const typeOrder = ['brand','category','document','product','concept'];
+  for (const type of typeOrder) {
+    if (!filterState.nodeValues[type]) continue;
+    const meta = NODE_TYPE_META[type] || { label: type, color: '#888' };
+    const values = Object.entries(filterState.nodeValues[type]);
+    values.sort((a,b) => a[1].label.localeCompare(b[1].label));
+
+    html += `<div class="cp-section open" data-section="node-${type}">`;
+    html += `<div class="cp-section-header" onclick="toggleSection(this)">`;
+    html += `<span class="cp-chevron">▶</span>`;
+    html += `<span class="cp-dot" style="background:${meta.color}"></span>`;
+    html += `<span class="cp-section-label">${meta.label}</span>`;
+    html += `<span class="cp-count">${values.length}</span>`;
+    html += `<div class="cp-toggle on" onclick="event.stopPropagation();toggleNodeType('${type}',this)"></div>`;
+    html += `</div>`;
+    html += `<div class="cp-values">`;
+    html += `<input class="cp-filter-input" placeholder="Filter ${meta.label.toLowerCase()}..." oninput="filterValues('${type}',this.value)" />`;
+    html += `<span class="cp-select-all" onclick="selectAllValues('${type}',true)">All</span> · `;
+    html += `<span class="cp-select-all" onclick="selectAllValues('${type}',false)">None</span>`;
+    html += `<div class="cp-value-list" id="values-${type}">`;
+    for (const [id, v] of values) {
+      html += `<div class="cp-value-item on" data-id="${id}" data-type="${type}" onclick="toggleValue(this,'${type}','${id}')">`;
+      html += `<div class="cp-check">✓</div>`;
+      html += `<span class="cp-value-label" title="${v.fullLabel}">${v.label}</span>`;
+      html += `</div>`;
+    }
+    html += `</div></div></div>`;
+  }
+
+  // Edge type sections
+  html += '<div class="cp-divider">Relationship Types</div>';
+  for (const [type, enabled] of Object.entries(filterState.edgeTypes)) {
+    const meta = EDGE_TYPE_META[type] || { label: type, color: '#aaa' };
+    const count = data.edges.filter(e => e.type === type).length;
+    html += `<div class="cp-section" data-section="edge-${type}">`;
+    html += `<div class="cp-section-header">`;
+    html += `<span class="cp-chevron" style="visibility:hidden">▶</span>`;
+    html += `<span class="cp-dot" style="background:${meta.color}"></span>`;
+    html += `<span class="cp-section-label">${meta.label}</span>`;
+    html += `<span class="cp-count">${count}</span>`;
+    html += `<div class="cp-toggle on" onclick="event.stopPropagation();toggleEdgeType('${type}',this)"></div>`;
+    html += `</div></div>`;
+  }
+
+  body.innerHTML = html;
+}
+
+function toggleSection(headerEl) {
+  headerEl.parentElement.classList.toggle('open');
+}
+
+function toggleNodeType(type, toggleEl) {
+  filterState.nodeTypes[type] = !filterState.nodeTypes[type];
+  toggleEl.classList.toggle('on', filterState.nodeTypes[type]);
+
+  // Also toggle all values
+  for (const id of Object.keys(filterState.nodeValues[type])) {
+    filterState.nodeValues[type][id].enabled = filterState.nodeTypes[type];
+  }
+  // Update checkboxes
+  const items = document.querySelectorAll(`[data-type="${type}"]`);
+  items.forEach(el => el.classList.toggle('on', filterState.nodeTypes[type]));
+
+  applyFilters();
+}
+
+function toggleEdgeType(type, toggleEl) {
+  filterState.edgeTypes[type] = !filterState.edgeTypes[type];
+  toggleEl.classList.toggle('on', filterState.edgeTypes[type]);
+  applyFilters();
+}
+
+function toggleValue(el, type, id) {
+  const v = filterState.nodeValues[type][id];
+  v.enabled = !v.enabled;
+  el.classList.toggle('on', v.enabled);
+
+  // Update type toggle if all on or all off
+  const allVals = Object.values(filterState.nodeValues[type]);
+  const anyOn = allVals.some(v => v.enabled);
+  filterState.nodeTypes[type] = anyOn;
+  const section = document.querySelector(`[data-section="node-${type}"]`);
+  if (section) {
+    const toggle = section.querySelector('.cp-toggle');
+    if (toggle) toggle.classList.toggle('on', anyOn);
+  }
+
+  applyFilters();
+}
+
+function selectAllValues(type, enabled) {
+  for (const id of Object.keys(filterState.nodeValues[type])) {
+    filterState.nodeValues[type][id].enabled = enabled;
+  }
+  filterState.nodeTypes[type] = enabled;
+
+  const items = document.querySelectorAll(`[data-type="${type}"]`);
+  items.forEach(el => el.classList.toggle('on', enabled));
+
+  const section = document.querySelector(`[data-section="node-${type}"]`);
+  if (section) {
+    const toggle = section.querySelector('.cp-toggle');
+    if (toggle) toggle.classList.toggle('on', enabled);
+  }
+
+  applyFilters();
+}
+
+function filterValues(type, query) {
+  const q = query.toLowerCase().trim();
+  const items = document.querySelectorAll(`#values-${type} .cp-value-item`);
+  items.forEach(el => {
+    const label = el.querySelector('.cp-value-label').textContent.toLowerCase();
+    const fullLabel = el.querySelector('.cp-value-label').title.toLowerCase();
+    el.style.display = (!q || label.includes(q) || fullLabel.includes(q)) ? '' : 'none';
+  });
+}
+
+// ── Brand / style helpers ───────────────────────────
+
+function getBrandCode(node) {
+  if (node.type === 'brand') {
+    for (const [c, t] of Object.entries(BRAND_THEMES)) if (t.label === node.label) return c;
+  }
+  if (node.label) {
+    for (const p of node.label.toLowerCase().split('/')) if (BRAND_THEMES[p]) return p;
+  }
+  if (graphData) {
+    for (const e of graphData.edges) {
+      const otherId = e.source === node.id ? e.target : (e.target === node.id ? e.source : null);
+      if (!otherId) continue;
+      const o = graphData.nodeMap[otherId];
+      if (o?.type === 'document' && o.label) {
+        for (const p of o.label.toLowerCase().split('/')) if (BRAND_THEMES[p]) return p;
+      }
+      if (o?.type === 'brand') {
+        for (const [c, t] of Object.entries(BRAND_THEMES)) if (t.label === o.label) return c;
+      }
+    }
+  }
+  return null;
+}
+
+function getNodeStyle(node) {
+  const code = getBrandCode(node);
+  const theme = code ? BRAND_THEMES[code] : null;
+  return (theme?.colors[node.type]) || DEFAULT_COLORS[node.type] || { bg: '#888', size: 14 };
+}
+
+function getEdgeColor(edge) {
+  const src = graphData?.nodeMap[edge.source];
+  if (src) {
+    const code = getBrandCode(src);
+    if (code && BRAND_THEMES[code]?.edges[edge.type]) return BRAND_THEMES[code].edges[edge.type];
+  }
+  return '#AAAAAA';
+}
+
+// ── Build network ───────────────────────────────────
+
+function buildNetwork(data) {
+  allVisNodes = data.nodes.map(n => {
+    const s = getNodeStyle(n);
+    const label = n.type === 'document' ? n.label.split('/').pop().replace('.pdf','') : n.label;
+    return {
+      id: n.id, label, fullLabel: n.label, nodeType: n.type,
+      shape: 'dot', size: s.size,
+      color: { background: s.bg, border: s.bg, highlight: { background: MATCH_COLOR, border: '#fff' }, hover: { background: s.bg, border: '#333' } },
+      font: { size: n.type==='brand'?16:n.type==='category'?14:11, color: '#333', face: 'Inter, sans-serif' },
+      borderWidth: 2, chunkCount: n.chunkCount||0, degree: n.degree||0,
+    };
+  });
+
+  allVisEdges = data.edges.map((e, i) => ({
+    id: 'e'+i, from: e.source, to: e.target, edgeType: e.type,
+    color: { color: getEdgeColor(e) },
+    width: 0.5,
+    smooth: { type: 'continuous' },
+    arrows: { to: { enabled: false } },
+  }));
+
+  visNodes = new vis.DataSet(allVisNodes);
+  visEdges = new vis.DataSet(allVisEdges);
+
+  network = new vis.Network(document.getElementById('vis-canvas'),
+    { nodes: visNodes, edges: visEdges },
+    {
+      nodes: { shape: 'dot', font: { size: 14 }, borderWidth: 2 },
+      edges: { width: 0.5, smooth: { type: 'continuous' } },
+      physics: {
+        stabilization: false,
+        barnesHut: { gravitationalConstant: -12000, centralGravity: 0.15, springLength: 200, springConstant: 0.01, damping: 0.5 },
+      },
+      interaction: { hover: true },
+    }
+  );
+
+  network.on('click', params => {
+    if (params.nodes.length > 0) showTooltip(params.nodes[0], params.pointer.DOM.x, params.pointer.DOM.y);
+    else hideTooltip();
+  });
+}
+
+// ── Apply filters ───────────────────────────────────
+
+function applyFilters() {
+  // Determine visible node IDs
+  const visibleNodeIds = new Set();
+  for (const [type, values] of Object.entries(filterState.nodeValues)) {
+    if (!filterState.nodeTypes[type]) continue;
+    for (const [id, v] of Object.entries(values)) {
+      if (v.enabled) visibleNodeIds.add(id);
+    }
+  }
+
+  // Update nodes
+  visNodes.update(allVisNodes.map(n => ({
+    id: n.id,
+    hidden: !visibleNodeIds.has(n.id),
+  })));
+
+  // Update edges: hidden if type disabled or either endpoint hidden
+  visEdges.update(allVisEdges.map(e => ({
+    id: e.id,
+    hidden: !filterState.edgeTypes[e.edgeType] || !visibleNodeIds.has(e.from) || !visibleNodeIds.has(e.to),
+  })));
+
+  updateStats();
+}
+
+function updateStats() {
+  const visibleNodes = allVisNodes.filter(n => {
+    const v = filterState.nodeValues[n.nodeType]?.[n.id];
+    return filterState.nodeTypes[n.nodeType] && v?.enabled;
+  }).length;
+  const visibleEdges = allVisEdges.filter(e => {
+    if (!filterState.edgeTypes[e.edgeType]) return false;
+    const srcV = filterState.nodeValues[allVisNodes.find(n=>n.id===e.from)?.nodeType]?.[e.from];
+    const tgtV = filterState.nodeValues[allVisNodes.find(n=>n.id===e.to)?.nodeType]?.[e.to];
+    return srcV?.enabled && tgtV?.enabled;
+  }).length;
+  document.getElementById('cp-stats').textContent = `${visibleNodes}n · ${visibleEdges}e`;
+}
+
+// ── Tooltip ─────────────────────────────────────────
+
+function showTooltip(nodeId, x, y) {
+  const node = graphData.nodeMap[nodeId];
+  if (!node) return;
+  const code = getBrandCode(node);
+  const theme = code ? BRAND_THEMES[code] : null;
+  document.documentElement.style.setProperty('--tt-primary', theme?.primary || '#555');
+  document.documentElement.style.setProperty('--tt-secondary', theme?.secondary || '#777');
+
+  let html = '';
+  if (node.type === 'document') {
+    html += `<div class="tt-row"><strong>File:</strong> ${node.label}</div>`;
+    const vn = allVisNodes.find(n => n.id === nodeId);
+    if (vn?.chunkCount) html += `<div class="tt-row"><strong>Chunks:</strong> ${vn.chunkCount}</div>`;
+    if (matchedDocIds.has(nodeId)) html += `<div class="tt-matched">★ Retrieved in last query</div>`;
+  } else {
+    html += `<div class="tt-row"><strong>${node.type}:</strong> ${node.label}</div>`;
+  }
+  const panel = document.getElementById('node-tooltip');
+  document.getElementById('tt-content').innerHTML = html;
+  panel.style.left = (x + 16) + 'px';
+  panel.style.top = (y + 16) + 'px';
+  panel.classList.add('visible');
+}
+
+function hideTooltip() { document.getElementById('node-tooltip').classList.remove('visible'); }
+
+// ── Path Highlighting ───────────────────────────────
+
+function highlightPath(pathData) {
+  if (!graphData || !pathData || !network) return;
+  const pn = new Set(pathData.nodes);
+  const pe = new Set();
+  pathData.edges.forEach(e => { pe.add(e.source+'|'+e.target); pe.add(e.target+'|'+e.source); });
+  matchedDocIds = new Set(pathData.nodes.filter(id => graphData.nodeMap[id]?.type === 'document'));
+
+  visNodes.update(allVisNodes.map(n => {
+    if (pn.has(n.id)) {
+      const s = getNodeStyle(graphData.nodeMap[n.id]);
+      const isDoc = n.nodeType === 'document';
+      return { id:n.id, hidden:false, size: isDoc?s.size*2:s.size*1.2,
+        color: { background: isDoc?MATCH_COLOR:s.bg, border: isDoc?'#fff':s.bg, highlight:{background:MATCH_COLOR,border:'#fff'} },
+        font: { size:n.nodeType==='brand'?18:n.nodeType==='category'?16:13, color:'#111', face:'Inter, sans-serif', bold:true },
+        borderWidth:3, shadow:{enabled:true,color:isDoc?MATCH_COLOR:s.bg,size:12,x:0,y:0} };
+    }
+    return { id:n.id, hidden:false, size:6,
+      color:{background:'#ddd',border:'#ccc'}, font:{size:0,color:'transparent'}, borderWidth:1, shadow:{enabled:false} };
+  }));
+
+  visEdges.update(allVisEdges.map(e => {
+    if (pe.has(e.from+'|'+e.to)) {
+      return { id:e.id, hidden:false, color:{color:MATCH_COLOR}, width:2, shadow:{enabled:true,color:MATCH_COLOR,size:6,x:0,y:0} };
+    }
+    return { id:e.id, hidden:false, color:{color:'#e0e0e0'}, width:0.3, shadow:{enabled:false} };
+  }));
+
+  const pathIds = pathData.nodes.filter(id => visNodes.get(id));
+  if (pathIds.length) network.fit({ nodes:pathIds, animation:{duration:800,easingFunction:'easeInOutQuad'} });
+  showPathBar(pathData);
+}
+
+function showPathBar(pathData) {
+  const byType = { brand:[],category:[],product:[],concept:[],document:[] };
+  pathData.nodes.forEach(id => { const n=graphData.nodeMap[id]; if(n&&byType[n.type]) byType[n.type].push(n); });
+  let html='', first=true;
+  for (const type of ['brand','category','product','concept','document']) {
+    if (!byType[type]?.length) continue;
+    if (!first) html+='<span class="path-arrow">→</span>';
+    first=false;
+    byType[type].forEach(n => {
+      const lb=n.type==='document'?n.label.split('/').pop().replace('.pdf',''):n.label;
+      html+='<span class="path-node" style="background:'+getNodeStyle(n).bg+'">'+lb+'</span>';
+    });
+  }
+  document.getElementById('path-chain').innerHTML=html;
+  document.getElementById('path-info').classList.add('visible');
+}
+
+function clearPath() {
+  if (!network) return;
+  matchedDocIds.clear();
+  document.getElementById('path-info').classList.remove('visible');
+  visNodes.update(allVisNodes.map(n => {
+    const s=getNodeStyle(graphData.nodeMap[n.id]);
+    return { id:n.id, hidden:false, size:s.size,
+      color:{background:s.bg,border:s.bg,highlight:{background:MATCH_COLOR,border:'#fff'},hover:{background:s.bg,border:'#333'}},
+      font:{size:n.nodeType==='brand'?16:n.nodeType==='category'?14:11,color:'#333',face:'Inter, sans-serif',bold:false},
+      borderWidth:2, shadow:{enabled:false} };
+  }));
+  visEdges.update(allVisEdges.map(e => ({
+    id:e.id, hidden:false, color:{color:getEdgeColor({source:e.from,target:e.to,type:e.edgeType})},
+    width:0.5, shadow:{enabled:false} })));
+  applyFilters();
+  network.fit({animation:{duration:500}});
+}
+
+function focusNode(nodeId) {
+  if (!network||!graphData?.nodeMap[nodeId]) return;
+  network.focus(nodeId,{scale:1.5,animation:{duration:600,easingFunction:'easeInOutQuad'}});
+  const pos=network.getPosition(nodeId);
+  const domPos=network.canvasToDOM(pos);
+  showTooltip(nodeId,domPos.x,domPos.y);
+}
+
+// ── Entry ───────────────────────────────────────────
+async function tryLoadData() {
+  document.getElementById('loading').querySelector('.loading-text').textContent='Start server: node search.js serve';
+}
+tryLoadData();
+</script>
+</body>
+</html>

@@ -1,0 +1,4 @@
+node_modules/
+index/
+ruvector.db
+.DS_Store
