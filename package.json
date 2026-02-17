@@ -12,6 +12,8 @@
   "type": "commonjs",
   "dependencies": {
     "@ruvector/ruvllm": "^2.4.1",
-    "ruvector": "^0.1.97"
+    "cheerio": "^1.2.0",
+    "ruvector": "^0.1.97",
+    "turndown": "^7.2.2"
   }
 }

@@ -215,30 +215,6 @@
     font-size: 12px; color: #f0c850;
   }
 
-  /* Path info bar */
-  .path-info {
-    position: absolute;
-    bottom: 12px; left: 12px; right: 12px;
-    z-index: 100;
-    padding: 8px 14px;
-    background: rgba(0,0,0,0.7);
-    backdrop-filter: blur(8px);
-    border-radius: 6px;
-    font-size: 11px;
-    display: none;
-    align-items: center; gap: 6px; flex-wrap: wrap;
-  }
-  .path-info.visible { display: flex; }
-  .path-info .path-label { color: #f0c850; font-weight: 600; text-transform: uppercase; font-size: 10px; letter-spacing: 0.06em; }
-  .path-info .path-node { padding: 2px 7px; border-radius: 3px; font-size: 10px; white-space: nowrap; color: #fff; }
-  .path-info .path-arrow { color: rgba(255,255,255,0.3); }
-  .path-info .path-clear {
-    margin-left: auto;
-    background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.2);
-    color: rgba(255,255,255,0.6); padding: 2px 10px; border-radius: 3px; cursor: pointer;
-    font-size: 10px;
-  }
-  .path-info .path-clear:hover { color: #fff; border-color: rgba(255,255,255,0.5); }
 
   .loading {
     position: fixed; inset: 0; z-index: 500;
@@ -282,11 +258,6 @@
     <div id="tt-content"></div>
   </div>
 
-  <div class="path-info" id="path-info">
-    <span class="path-label">Path</span>
-    <span id="path-chain"></span>
-    <button class="path-clear" onclick="clearPath()">Clear</button>
-  </div>
 </div>
 
 <script>
@@ -576,6 +547,14 @@ function buildNetwork(data) {
     if (params.nodes.length > 0) showTooltip(params.nodes[0], params.pointer.DOM.x, params.pointer.DOM.y);
     else hideTooltip();
   });
+  network.on('doubleClick', params => {
+    if (params.nodes.length > 0) {
+      const node = graphData.nodeMap[params.nodes[0]];
+      if (node && node.meta && node.meta.url) {
+        window.open(node.meta.url, '_blank');
+      }
+    }
+  });
 }
 
 // ── Apply filters ───────────────────────────────────
@@ -631,7 +610,9 @@ function showTooltip(nodeId, x, y) {
 
   let html = '';
   if (node.type === 'document') {
-    html += `<div class="tt-row"><strong>File:</strong> ${node.label}</div>`;
+    const title = node.meta?.title || node.label;
+    html += `<div class="tt-row"><strong>${title}</strong></div>`;
+    if (node.meta?.url) html += `<div class="tt-row"><a href="${node.meta.url}" target="_blank" style="color:#2a5a9a;text-decoration:none;font-size:11px">${node.meta.url}</a></div>`;
     const vn = allVisNodes.find(n => n.id === nodeId);
     if (vn?.chunkCount) html += `<div class="tt-row"><strong>Chunks:</strong> ${vn.chunkCount}</div>`;
     if (matchedDocIds.has(nodeId)) html += `<div class="tt-matched">★ Retrieved in last query</div>`;
@@ -656,6 +637,7 @@ function highlightPath(pathData) {
   pathData.edges.forEach(e => { pe.add(e.source+'|'+e.target); pe.add(e.target+'|'+e.source); });
   matchedDocIds = new Set(pathData.nodes.filter(id => graphData.nodeMap[id]?.type === 'document'));
 
+  // Hide all unrelated nodes, show only path-relevant ones
   visNodes.update(allVisNodes.map(n => {
     if (pn.has(n.id)) {
       const s = getNodeStyle(graphData.nodeMap[n.id]);
@@ -665,43 +647,24 @@ function highlightPath(pathData) {
         font: { size:n.nodeType==='brand'?18:n.nodeType==='category'?16:13, color:'#111', face:'Inter, sans-serif', bold:true },
         borderWidth:3, shadow:{enabled:true,color:isDoc?MATCH_COLOR:s.bg,size:12,x:0,y:0} };
     }
-    return { id:n.id, hidden:false, size:6,
-      color:{background:'#ddd',border:'#ccc'}, font:{size:0,color:'transparent'}, borderWidth:1, shadow:{enabled:false} };
+    return { id:n.id, hidden:true };
   }));
 
+  // Hide all unrelated edges, show only path edges
   visEdges.update(allVisEdges.map(e => {
     if (pe.has(e.from+'|'+e.to)) {
       return { id:e.id, hidden:false, color:{color:MATCH_COLOR}, width:2, shadow:{enabled:true,color:MATCH_COLOR,size:6,x:0,y:0} };
     }
-    return { id:e.id, hidden:false, color:{color:'#e0e0e0'}, width:0.3, shadow:{enabled:false} };
+    return { id:e.id, hidden:true };
   }));
 
   const pathIds = pathData.nodes.filter(id => visNodes.get(id));
   if (pathIds.length) network.fit({ nodes:pathIds, animation:{duration:800,easingFunction:'easeInOutQuad'} });
-  showPathBar(pathData);
-}
-
-function showPathBar(pathData) {
-  const byType = { brand:[],category:[],product:[],concept:[],document:[] };
-  pathData.nodes.forEach(id => { const n=graphData.nodeMap[id]; if(n&&byType[n.type]) byType[n.type].push(n); });
-  let html='', first=true;
-  for (const type of ['brand','category','product','concept','document']) {
-    if (!byType[type]?.length) continue;
-    if (!first) html+='<span class="path-arrow">→</span>';
-    first=false;
-    byType[type].forEach(n => {
-      const lb=n.type==='document'?n.label.split('/').pop().replace('.pdf',''):n.label;
-      html+='<span class="path-node" style="background:'+getNodeStyle(n).bg+'">'+lb+'</span>';
-    });
-  }
-  document.getElementById('path-chain').innerHTML=html;
-  document.getElementById('path-info').classList.add('visible');
 }
 
 function clearPath() {
   if (!network) return;
   matchedDocIds.clear();
-  document.getElementById('path-info').classList.remove('visible');
   visNodes.update(allVisNodes.map(n => {
     const s=getNodeStyle(graphData.nodeMap[n.id]);
     return { id:n.id, hidden:false, size:s.size,

@@ -1,6 +1,5 @@
-const { BRANDS, CATEGORIES } = require('../domain-constants');
 const { cosineSim } = require('../utils/math');
-const { extractEntities, extractDocMeta } = require('./entity-extraction');
+const { extractEntities, extractDocMeta, DOMAINS } = require('./entity-extraction');
 
 class KnowledgeGraph {
   constructor() {
@@ -49,15 +48,10 @@ class KnowledgeGraph {
     return results;
   }
 
-  buildFromRecords(records) {
+  buildFromRecords(records, opts = {}) {
     console.log('  Building knowledge graph...');
-
-    for (const [code, name] of Object.entries(BRANDS)) {
-      this.addNode(`brand:${code}`, 'brand', name);
-    }
-    for (const [code, name] of Object.entries(CATEGORIES)) {
-      this.addNode(`category:${code}`, 'category', name);
-    }
+    const domain = opts.domain || 'Westpac';
+    const d = DOMAINS[domain] || DOMAINS.Westpac;
 
     const filesSeen = new Set();
     for (const r of records) {
@@ -68,15 +62,25 @@ class KnowledgeGraph {
       const docId = `doc:${r.file}`;
       if (!filesSeen.has(r.file)) {
         filesSeen.add(r.file);
-        const docMeta = extractDocMeta(r.file);
+        const docMeta = extractDocMeta(r.file, domain);
+        if (r.url) docMeta.url = r.url;
+        if (r.title) docMeta.title = r.title;
         this.addNode(docId, 'document', r.file, docMeta);
         this.docChunks.set(r.file, []);
 
         if (docMeta.brand) {
-          this.addBidirectional(docId, `brand:${docMeta.brand}`, 'belongs_to_brand');
+          const brandId = `brand:${docMeta.brand}`;
+          if (!this.nodes.has(brandId)) {
+            this.addNode(brandId, 'brand', d.brands[docMeta.brand]);
+          }
+          this.addBidirectional(docId, brandId, 'belongs_to_brand');
         }
         if (docMeta.category) {
-          this.addBidirectional(docId, `category:${docMeta.category}`, 'in_category');
+          const catId = `category:${docMeta.category}`;
+          if (!this.nodes.has(catId)) {
+            this.addNode(catId, 'category', d.categories[docMeta.category]);
+          }
+          this.addBidirectional(docId, catId, 'in_category');
         }
       }
 
@@ -84,7 +88,7 @@ class KnowledgeGraph {
       this.addEdge(docId, r.id, 'contains', 1.0);
       this.docChunks.get(r.file).push(r.id);
 
-      const entities = extractEntities(r.text || r.preview || '');
+      const entities = extractEntities(r.text || r.preview || '', domain);
       for (const entity of entities) {
         if (!this.nodes.has(entity)) {
           const [type, name] = entity.split(':');
@@ -181,16 +185,21 @@ class KnowledgeGraph {
         pathNodes.add(docId);
         pathEdges.push({ source: r.id, target: docId, type: 'part_of' });
 
-        const meta = extractDocMeta(r.file);
+        const docNode = this.nodes.get(docId);
+        const meta = docNode?.meta || {};
         if (meta.brand) {
           const brandId = `brand:${meta.brand}`;
-          pathNodes.add(brandId);
-          pathEdges.push({ source: docId, target: brandId, type: 'belongs_to_brand' });
+          if (this.nodes.has(brandId)) {
+            pathNodes.add(brandId);
+            pathEdges.push({ source: docId, target: brandId, type: 'belongs_to_brand' });
+          }
         }
         if (meta.category) {
           const catId = `category:${meta.category}`;
-          pathNodes.add(catId);
-          pathEdges.push({ source: docId, target: catId, type: 'in_category' });
+          if (this.nodes.has(catId)) {
+            pathNodes.add(catId);
+            pathEdges.push({ source: docId, target: catId, type: 'in_category' });
+          }
         }
       }
     }
@@ -240,6 +249,7 @@ class KnowledgeGraph {
               graphScore: weight,
               sources: [neighbor.type],
               file: record.file,
+              url: record.url || '',
               chunk: record.chunk,
               totalChunks: record.totalChunks,
               pages: record.pages,
@@ -259,10 +269,20 @@ class KnowledgeGraph {
       }
     }
 
-    const combined = [...scored.values()]
+    // Normalise graph boost: cap at 30% of the vector score range
+    // so graph expansion improves ranking but can't overpower vector relevance
+    const allScored = [...scored.values()];
+    const maxGraphScore = Math.max(...allScored.map(r => r.graphScore), 1);
+    const vectorScores = allScored.filter(r => r.vectorScore < 2.0).map(r => r.vectorScore);
+    const vectorRange = vectorScores.length > 1
+      ? Math.max(vectorScores[vectorScores.length - 1] - vectorScores[0], 0.01)
+      : 0.1;
+    const boostScale = (vectorRange * 0.3) / maxGraphScore;
+
+    const combined = allScored
       .map(r => ({
         ...r,
-        combinedScore: r.vectorScore - (r.graphScore * 0.15),
+        combinedScore: r.vectorScore - (r.graphScore * boostScale),
       }))
       .sort((a, b) => a.combinedScore - b.combinedScore)
       .slice(0, k);

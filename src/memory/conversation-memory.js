@@ -4,19 +4,21 @@ const { INDEX_DIR, MEMORY_FILE, LLM_MODEL } = require('../config');
 const { cosineSim } = require('../utils/math');
 
 class ConversationMemory {
-  constructor() {
+  constructor(paths = null) {
     this.reasoningBank = new ReasoningBank();
     this.sona = new SonaCoordinator();
     this.history = [];
     this.memories = [];
     this.loaded = false;
+    this._indexDir = paths ? paths.indexDir : INDEX_DIR;
+    this._memoryFile = paths ? paths.memoryFile : MEMORY_FILE;
   }
 
   load() {
     if (this.loaded) return;
-    if (fs.existsSync(MEMORY_FILE)) {
+    if (fs.existsSync(this._memoryFile)) {
       try {
-        const data = JSON.parse(fs.readFileSync(MEMORY_FILE, 'utf-8'));
+        const data = JSON.parse(fs.readFileSync(this._memoryFile, 'utf-8'));
         this.history = data.history || [];
         this.memories = data.memories || [];
 
@@ -35,7 +37,7 @@ class ConversationMemory {
   }
 
   save() {
-    if (!fs.existsSync(INDEX_DIR)) fs.mkdirSync(INDEX_DIR, { recursive: true });
+    if (!fs.existsSync(this._indexDir)) fs.mkdirSync(this._indexDir, { recursive: true });
     const data = {
       history: this.history.slice(-100),
       memories: this.memories.map(m => ({
@@ -43,7 +45,7 @@ class ConversationMemory {
         embedding: m.embedding ? Array.from(m.embedding) : null,
       })),
     };
-    fs.writeFileSync(MEMORY_FILE, JSON.stringify(data));
+    fs.writeFileSync(this._memoryFile, JSON.stringify(data));
   }
 
   async store(query, answer, sources, queryEmbedding) {

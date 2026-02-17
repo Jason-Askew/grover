@@ -14,4 +14,17 @@ function findPdfs(dir) {
   return files;
 }
 
-module.exports = { findPdfs };
+function findMarkdownFiles(dir) {
+  const files = [];
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const fullPath = path.join(dir, entry.name);
+    if (entry.isDirectory() && !entry.name.startsWith('.')) {
+      files.push(...findMarkdownFiles(fullPath));
+    } else if (entry.isFile() && entry.name.toLowerCase().endsWith('.md')) {
+      files.push(fullPath);
+    }
+  }
+  return files;
+}
+
+module.exports = { findPdfs, findMarkdownFiles };

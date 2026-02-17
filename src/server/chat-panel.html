@@ -34,6 +34,26 @@
   }
   .chat-header button:hover { color: #333; border-color: #999; }
 
+  .chat-header select {
+    font-family: 'Inter', sans-serif;
+    font-size: 11px;
+    color: #333;
+    padding: 4px 8px;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    background: #fff;
+    cursor: pointer;
+    outline: none;
+    transition: border-color 0.15s;
+  }
+  .chat-header select:hover { border-color: #999; }
+  .chat-header select:focus { border-color: #2a5a9a; }
+  .chat-header-controls {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
   .chat-messages {
     flex: 1;
     overflow-y: auto;
@@ -150,10 +170,13 @@
 <div class="chat-panel">
   <div class="chat-header">
     <h2>Ask the knowledge base</h2>
-    <button onclick="clearChat()">Clear</button>
+    <div class="chat-header-controls">
+      <select id="index-selector" onchange="switchIndex(this.value)"></select>
+      <button onclick="clearChat()">Clear</button>
+    </div>
   </div>
   <div class="chat-messages" id="chat-messages">
-    <div class="chat-msg system">Ask a question about the financial documents</div>
+    <div class="chat-msg system" id="chat-welcome">Ask a question about the knowledge base</div>
   </div>
   <div class="typing-indicator" id="typing">
     Searching<span>.</span><span>.</span><span>.</span>
@@ -171,6 +194,56 @@ const chatInput = document.getElementById('chat-input');
 const chatMessages = document.getElementById('chat-messages');
 const chatSend = document.getElementById('chat-send');
 const typingEl = document.getElementById('typing');
+const indexSelector = document.getElementById('index-selector');
+
+// Load available indexes on startup
+(async function loadIndexes() {
+  try {
+    const resp = await fetch('/api/indexes');
+    const indexes = await resp.json();
+    indexSelector.innerHTML = '';
+    let activeName = '';
+    for (const idx of indexes) {
+      const opt = document.createElement('option');
+      opt.value = idx.name;
+      opt.textContent = idx.name + ' (' + idx.chunks + ' chunks)';
+      if (idx.active) { opt.selected = true; activeName = idx.name; }
+      indexSelector.appendChild(opt);
+    }
+    const welcome = document.getElementById('chat-welcome');
+    if (welcome && activeName) welcome.textContent = 'Ask a question about ' + activeName;
+  } catch (e) {
+    console.error('Failed to load indexes:', e);
+  }
+})();
+
+async function switchIndex(name) {
+  chatSend.disabled = true;
+  indexSelector.disabled = true;
+  addMessage('system', 'Switching to ' + name + '...');
+  try {
+    const resp = await fetch('/api/switch', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ index: name }),
+    });
+    const data = await resp.json();
+    if (data.error) {
+      addMessage('system', 'Error: ' + data.error);
+    } else {
+      // Reload graph with new viz data
+      if (data.vizData && typeof initGraph === 'function') {
+        initGraph(data.vizData);
+      }
+      chatMessages.innerHTML = '';
+      addMessage('system', 'Ask a question about ' + name);
+    }
+  } catch (e) {
+    addMessage('system', 'Switch failed: ' + e.message);
+  }
+  chatSend.disabled = false;
+  indexSelector.disabled = false;
+}
 
 chatInput.addEventListener('keydown', e => {
   if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
@@ -210,7 +283,11 @@ async function sendMessage() {
         sourcesHtml = '<div class="sources">' +
           data.sources.map(s => {
             const pg = s.pageStart === s.pageEnd ? 'p.' + s.pageStart : 'pp.' + s.pageStart + '-' + s.pageEnd;
-            return '<div data-doc="doc:' + s.file.replace(/"/g, '&quot;') + '">[' + s.index + '] ' + s.file + ' (' + pg + ')</div>';
+            const label = s.file.replace(/\.md$/, '').split('/').pop();
+            if (s.url) {
+              return '<div data-doc="doc:' + s.file.replace(/"/g, '&quot;') + '" data-url="' + s.url.replace(/"/g, '&quot;') + '">[' + s.index + '] ' + label + ' (' + pg + ') ↗</div>';
+            }
+            return '<div data-doc="doc:' + s.file.replace(/"/g, '&quot;') + '">[' + s.index + '] ' + label + ' (' + pg + ')</div>';
           }).join('') +
           '</div>';
       }
@@ -246,16 +323,22 @@ function addMessage(role, text, extraHtml = '') {
   chatMessages.scrollTop = chatMessages.scrollHeight;
 }
 
-// Event delegation for source clicks
+// Event delegation for source clicks — open URL if available, else focus graph node
 chatMessages.addEventListener('click', function(e) {
   const sourceEl = e.target.closest('[data-doc]');
   if (sourceEl) {
-    focusNode(sourceEl.dataset.doc);
+    if (sourceEl.dataset.url) {
+      window.open(sourceEl.dataset.url, '_blank');
+    } else {
+      focusNode(sourceEl.dataset.doc);
+    }
   }
 });
 
 function clearChat() {
-  chatMessages.innerHTML = '<div class="chat-msg system">Ask a question about the financial documents</div>';
+  chatMessages.innerHTML = '';
+  const name = indexSelector.value || 'the knowledge base';
+  chatMessages.innerHTML = '<div class="chat-msg system" id="chat-welcome">Ask a question about ' + name + '</div>';
   fetch('/api/forget', { method: 'POST' });
   if (typeof clearPath === 'function') clearPath();
 }
