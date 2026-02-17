@@ -95,6 +95,7 @@ async function ragAnswer(query, results, memory = null, { stream = true } = {}) 
   const sources = results.map((r, i) => ({
     index: i + 1,
     file: r.file,
+    url: r.url || '',
     pageStart: r.pageStart,
     pageEnd: r.pageEnd,
     score: (r.combinedScore ?? r.score ?? r.vectorScore ?? 0),

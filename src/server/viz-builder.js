@@ -4,8 +4,12 @@ function buildVizData(graph) {
   const vizNodes = [];
   const vizNodeIds = new Set();
 
+  // Skip category:general — it's a catch-all with too many edges and destabilises the graph
+  const SKIP_IDS = new Set(['category:general']);
+
   for (const [id, node] of graph.nodes) {
     if (node.type === 'chunk') continue;
+    if (SKIP_IDS.has(id)) continue;
     vizNodes.push({ id, type: node.type, label: node.label, meta: node.meta || {} });
     vizNodeIds.add(id);
   }
@@ -37,7 +41,15 @@ function buildVizData(graph) {
     for (const edge of edgeList) {
       const targetNode = graph.nodes.get(edge.target);
       if (!targetNode) continue;
-      if (sourceNode.type === 'chunk' && targetNode.type === 'chunk') continue;
+      if (sourceNode.type === 'chunk' && targetNode.type === 'chunk') {
+        // Collapse chunk-to-chunk similarity edges to doc-to-doc
+        const srcDoc = findDocForChunk(sourceId);
+        const tgtDoc = findDocForChunk(edge.target);
+        if (srcDoc && tgtDoc && srcDoc !== tgtDoc) {
+          addEdge(srcDoc, tgtDoc, edge.type, edge.weight);
+        }
+        continue;
+      }
       if (sourceNode.type === 'chunk') {
         const docId = findDocForChunk(sourceId);
         if (docId) addEdge(docId, edge.target, edge.type, edge.weight);
@@ -50,20 +62,38 @@ function buildVizData(graph) {
     }
   }
 
-  // Filter edges
-  const structuralTypes = new Set(['belongs_to_brand', 'in_category']);
+  // Filter edges — keep structural, similarity, and entity edges
+  const alwaysKeepTypes = new Set(['belongs_to_brand', 'in_category', 'semantically_similar', 'shared_concept']);
   const vizEdges = [];
 
+  // Keep similarity edges — per doc, top N by weight to avoid clutter
+  const simByDoc = new Map();
   for (const edge of edgeMap.values()) {
-    if (structuralTypes.has(edge.type)) {
+    if (edge.type === 'semantically_similar' || edge.type === 'shared_concept') {
+      for (const docId of [edge.source, edge.target]) {
+        if (!simByDoc.has(docId)) simByDoc.set(docId, []);
+        simByDoc.get(docId).push(edge);
+      }
+    } else if (edge.type === 'belongs_to_brand' || edge.type === 'in_category') {
       vizEdges.push(edge);
+    }
+  }
+  const addedSimEdges = new Set();
+  for (const [, edges] of simByDoc) {
+    edges.sort((a, b) => (b.weight || 1) - (a.weight || 1));
+    for (const e of edges.slice(0, 3)) {
+      const key = `${e.source}|${e.target}|${e.type}`;
+      if (!addedSimEdges.has(key)) {
+        addedSimEdges.add(key);
+        vizEdges.push(e);
+      }
     }
   }
 
   // Per entity, keep only top 3 by weight
   const entityEdges = new Map();
   for (const edge of edgeMap.values()) {
-    if (structuralTypes.has(edge.type)) continue;
+    if (alwaysKeepTypes.has(edge.type)) continue;
     const src = graph.nodes.get(edge.source) || { type: '' };
     const tgt = graph.nodes.get(edge.target) || { type: '' };
     const entityId = (src.type === 'product' || src.type === 'concept') ? edge.source :

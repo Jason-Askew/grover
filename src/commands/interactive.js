@@ -1,26 +1,29 @@
 const rv = require('ruvector');
 const readline = require('readline');
 const { ReasoningBank, SonaCoordinator } = require('@ruvector/ruvllm');
-const { LLM_API_KEY, LLM_MODEL, LLM_BASE_URL } = require('../config');
+const { LLM_API_KEY, LLM_MODEL, LLM_BASE_URL, resolveIndex } = require('../config');
 const { loadIndex } = require('../persistence/index-persistence');
 const { retrieve } = require('../retrieval/retrieve');
 const { ragAnswer } = require('../llm/rag');
 const { formatResult } = require('../utils/formatting');
 const { ConversationMemory } = require('../memory/conversation-memory');
 
-async function interactive() {
-  const index = loadIndex();
+async function interactive(indexName = null) {
+  const paths = indexName ? resolveIndex(indexName) : null;
+  let index = loadIndex(paths);
+  if (!index && indexName === 'Westpac') index = loadIndex();
   if (!index) { console.log('No index found. Run: node search.js ingest'); return; }
 
   const hasGraph = !!index.graph;
   const hasLLM = !!LLM_API_KEY;
-  console.log(`Loading index: ${index.records.length} chunks, ${index.dim}d${hasGraph ? ' + graph' : ''}`);
+  const label = indexName ? ` "${indexName}"` : '';
+  console.log(`Loading index${label}: ${index.records.length} chunks, ${index.dim}d${hasGraph ? ' + graph' : ''}`);
   if (hasLLM) console.log(`LLM: ${LLM_MODEL} via ${LLM_BASE_URL}`);
   else console.log(`LLM: not configured (set OPENAI_API_KEY for RAG answers)`);
 
   await rv.initOnnxEmbedder();
 
-  const memory = new ConversationMemory();
+  const memory = new ConversationMemory(paths);
   memory.load();
 
   const uniqueFiles = new Set(index.records.map(r => r.file)).size;

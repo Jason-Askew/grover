@@ -1,0 +1,198 @@
+# Services Australia - Evaluation Questions
+# 877 pages across 19 categories
+
+## Age Pension
+1. What is the qualifying age for Age Pension?
+2. How does the income test work for Age Pension?
+3. What is the assets test free area for a single homeowner on Age Pension?
+4. How much Age Pension can a single person get?
+5. What happens to my Age Pension if I travel overseas?
+6. How long can I be overseas before my Age Pension is affected?
+7. What are the residency requirements for Age Pension?
+
+## Disability Support Pension
+8. Who is eligible for Disability Support Pension?
+9. What are the impairment tables used for DSP assessment?
+10. What is the continuing inability to work requirement?
+11. How much can I earn before my Disability Support Pension is reduced?
+12. What medical evidence do I need for Disability Support Pension?
+13. What are the non-medical rules for Disability Support Pension?
+14. What are the payment rates for Disability Support Pension?
+
+## JobSeeker Payment
+15. Who can get JobSeeker Payment?
+16. How much JobSeeker Payment can I get?
+17. What are the mutual obligation requirements for JobSeeker?
+18. What is the liquid assets waiting period?
+19. How do I report my employment income while on JobSeeker?
+20. What happens if I don't meet my mutual obligation requirements?
+21. Can I get JobSeeker Payment if I'm over 55?
+22. What medical certificate do I need for JobSeeker Payment?
+
+## Family Tax Benefit
+23. Who can get Family Tax Benefit?
+24. What is the difference between FTB Part A and Part B?
+25. How does the income test work for Family Tax Benefit Part A?
+26. How does the income test work for Family Tax Benefit Part B?
+27. What are the payment rates for Family Tax Benefit?
+28. How does my percentage of care affect my FTB payments?
+29. What happens to FTB when my child turns 16?
+30. What are the immunisation requirements for Family Tax Benefit?
+
+## Parental Leave & Families
+31. Who can get Parental Leave Pay?
+32. How much Parental Leave Pay can I get?
+33. What is the work test for Parental Leave Pay?
+34. What is the income test for Parental Leave Pay?
+35. How do I choose and share my Parental Leave Pay days?
+36. What is Dad and Partner Pay?
+37. What is the Newborn Upfront Payment and Newborn Supplement?
+
+## Child Care
+38. Who can get Child Care Subsidy?
+39. How much Child Care Subsidy can I get?
+40. What is Additional Child Care Subsidy?
+41. How do I balance my Child Care Subsidy payment?
+
+## Carer Payments
+42. Who can get Carer Payment?
+43. How much Carer Payment can I get?
+44. Who can get Carer Allowance?
+45. Can I get both Carer Payment and Carer Allowance at the same time?
+46. What is Carer Adjustment Payment?
+
+## Youth Allowance & Students
+47. Who can get Youth Allowance for students?
+48. What is the difference between Austudy and Youth Allowance?
+49. How much Youth Allowance can students get?
+50. What is the Student Start-up Loan?
+51. Who can get a Relocation Scholarship?
+52. What is ABSTUDY and who can get it?
+53. What is the Tertiary Access Payment?
+
+## Allowances
+54. Who can get Rent Assistance?
+55. What is Mobility Allowance?
+56. Who can get Pharmaceutical Allowance?
+57. What is Telephone Allowance?
+58. What is Utilities Allowance?
+59. What is Remote Area Allowance?
+60. What is Farm Household Allowance and who is eligible?
+61. What is Energy Supplement and who can get it?
+
+## Concession Cards
+62. How do I get a Pensioner Concession Card?
+63. What is the Health Care Card?
+64. Who is eligible for the Commonwealth Seniors Health Card?
+65. What is the Low Income Health Care Card?
+66. What is the income test for the Low Income Health Care Card?
+67. What is the Foster Child Health Care Card?
+68. What is the Ex-Carer Allowance Child Health Care Card?
+
+## Medicare
+69. How do I enrol in Medicare?
+70. What is the Medicare Safety Net?
+71. How do I claim a Medicare benefit?
+72. What is bulk billing?
+73. What are Reciprocal Health Care Agreements?
+74. Which countries have Reciprocal Health Care Agreements with Australia?
+75. What is the Child Dental Benefits Schedule?
+76. How does mental health care work under Medicare?
+77. What medical costs does Medicare cover?
+
+## Pharmaceutical Benefits Scheme
+78. How does the Pharmaceutical Benefits Scheme work?
+79. What is the PBS Safety Net threshold?
+80. How do I keep track of my PBS medicines?
+
+## Child Support
+81. Who can get a child support assessment?
+82. How is child support calculated?
+83. What is the basic child support formula?
+84. How does percentage of care affect child support?
+85. How does income affect child support payments?
+86. What happens to child support when a child turns 18?
+87. Can I object to a child support decision?
+88. What is a limited child support agreement?
+89. What is a binding child support agreement?
+90. How does child support work when a parent lives overseas?
+91. What is the fixed annual rate for child support?
+92. How do I apply for a child support assessment?
+93. How does child support affect Family Tax Benefit?
+
+## myGov & Digital Services
+94. What is myGov?
+95. How do I set up a myGov account?
+96. How do I link services to myGov?
+97. What are the Centrelink online account help guides?
+98. How do I set up my Medicare online account?
+99. What is the Express Plus mobile app?
+
+## Income & Assets Tests (General)
+100. What is deeming and how does it affect my payment?
+101. How does the taper rate work?
+102. What is the free area for the income test?
+103. What counts as a financial asset for deeming?
+104. Is my principal home counted in the assets test?
+105. What are exempt assets?
+106. What is adjusted taxable income?
+107. How does the maintenance income test work?
+
+## Employment & Obligations
+108. What are participation requirements?
+109. What is a Job Plan?
+110. What is Workforce Australia?
+111. What is working credit?
+112. How do I report employment income to Centrelink?
+113. What are the demerits and penalties for not meeting obligations?
+114. What are the exemptions from mutual obligation requirements?
+115. What are participation requirements if I'm under 35?
+
+## Crisis & Special Circumstances
+116. What is Crisis Payment?
+117. Who can get Crisis Payment for family and domestic violence?
+118. What is Special Benefit and who can get it?
+119. What help is available during a natural disaster?
+120. What is the bereavement payment?
+121. What should I do when someone dies?
+122. What support is available for family and domestic violence?
+
+## Migrants & Refugees
+123. What is the newly arrived resident's waiting period?
+124. What payments can refugees get?
+125. What is the Refugee Servicing Network?
+126. What help is available for people migrating to Australia?
+127. Can New Zealand citizens get payments in Australia?
+128. What is the Status Resolution Support Services payment?
+
+## Going Overseas
+129. What happens to my Centrelink payment if I go overseas?
+130. How long can I travel overseas and still get my payment?
+131. What are the portability rules for pensions?
+132. Do I need to tell Centrelink before I travel overseas?
+
+## Aged Care
+133. What aged care services are available?
+134. What is a Home Care Package?
+135. How does the aged care means test work?
+
+## Identity & Administration
+136. How do I prove my identity with Centrelink?
+137. What is a nominee?
+138. How do I appoint a correspondence nominee?
+139. How do I update my name with Centrelink?
+140. What is a tax file number and why do I need one?
+
+## Compensation & Debts
+141. How does compensation affect my Centrelink payment?
+142. What are Centrelink debts and overpayments?
+143. How do I get an explanation or review of a Centrelink decision?
+144. What is the robodebt class action settlement?
+
+## Cross-Topic Questions
+145. What is the difference between a pension and an allowance?
+146. What payments can I get if I'm a single parent?
+147. What help is available for someone who just lost their job?
+148. I'm turning 67 — how do I transfer to Age Pension?
+149. What payments can carers get alongside the person they care for?
+150. How do I manage my budget when I'm on a Centrelink payment?

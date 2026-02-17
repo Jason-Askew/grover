@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Knowledge Graph — RuVector</title>
+<title>Knowledge Graph</title>
 <script src="https://unpkg.com/vis-network@9.1.6/standalone/umd/vis-network.min.js"></script>
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
@@ -156,6 +156,10 @@
     text-overflow: ellipsis;
     white-space: nowrap;
   }
+  .cp-value-item.unavailable {
+    opacity: 0.25;
+    pointer-events: none;
+  }
   .cp-select-all {
     font-size: 10px;
     color: #4a8eda;
@@ -185,7 +189,7 @@
   }
   #graph-container > div { width: 100%; height: 100%; }
 
-  /* Click tooltip */
+  /* Click tooltip (non-document nodes) */
   .node-tooltip {
     position: absolute;
     z-index: 100;
@@ -215,30 +219,83 @@
     font-size: 12px; color: #f0c850;
   }
 
-  /* Path info bar */
-  .path-info {
-    position: absolute;
-    bottom: 12px; left: 12px; right: 12px;
-    z-index: 100;
-    padding: 8px 14px;
-    background: rgba(0,0,0,0.7);
-    backdrop-filter: blur(8px);
-    border-radius: 6px;
-    font-size: 11px;
+  /* Document viewer panel */
+  .doc-viewer {
+    position: fixed;
+    top: 0; bottom: 0;
+    left: 280px;
+    width: 480px;
+    z-index: 150;
+    background: #fff;
+    border-right: 1px solid #e0e0e0;
     display: none;
-    align-items: center; gap: 6px; flex-wrap: wrap;
+    flex-direction: column;
+    box-shadow: 4px 0 20px rgba(0,0,0,0.08);
   }
-  .path-info.visible { display: flex; }
-  .path-info .path-label { color: #f0c850; font-weight: 600; text-transform: uppercase; font-size: 10px; letter-spacing: 0.06em; }
-  .path-info .path-node { padding: 2px 7px; border-radius: 3px; font-size: 10px; white-space: nowrap; color: #fff; }
-  .path-info .path-arrow { color: rgba(255,255,255,0.3); }
-  .path-info .path-clear {
-    margin-left: auto;
-    background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.2);
-    color: rgba(255,255,255,0.6); padding: 2px 10px; border-radius: 3px; cursor: pointer;
-    font-size: 10px;
+  .doc-viewer.visible { display: flex; }
+  .doc-viewer-header {
+    padding: 14px 16px;
+    border-bottom: 1px solid #e8e8e8;
+    flex-shrink: 0;
   }
-  .path-info .path-clear:hover { color: #fff; border-color: rgba(255,255,255,0.5); }
+  .doc-viewer-header h3 {
+    font-family: 'Inter', sans-serif;
+    font-size: 14px;
+    font-weight: 600;
+    color: #333;
+    margin-bottom: 4px;
+    line-height: 1.4;
+  }
+  .doc-viewer-header .doc-url {
+    font-size: 11px;
+    font-family: 'Inter', sans-serif;
+  }
+  .doc-viewer-header .doc-url a {
+    color: #e67e22;
+    text-decoration: none;
+    transition: color 0.15s;
+  }
+  .doc-viewer-header .doc-url a:hover { color: #d35400; text-decoration: underline; }
+  .doc-viewer-header .doc-meta {
+    font-size: 11px;
+    color: #999;
+    font-family: 'Inter', sans-serif;
+    margin-top: 4px;
+  }
+  .doc-viewer-close {
+    position: absolute; top: 10px; right: 12px;
+    background: none; border: 1px solid #ddd;
+    border-radius: 4px; padding: 2px 8px;
+    font-size: 14px; cursor: pointer; color: #888;
+    font-family: 'Inter', sans-serif;
+    transition: all 0.15s;
+  }
+  .doc-viewer-close:hover { color: #333; border-color: #999; }
+  .doc-viewer-body {
+    flex: 1;
+    overflow-y: auto;
+    padding: 16px;
+    font-family: 'Inter', sans-serif;
+    font-size: 13px;
+    line-height: 1.7;
+    color: #444;
+  }
+  .doc-viewer-body::-webkit-scrollbar { width: 4px; }
+  .doc-viewer-body::-webkit-scrollbar-thumb { background: #ddd; border-radius: 2px; }
+  .doc-viewer-body h1,.doc-viewer-body h2,.doc-viewer-body h3 {
+    color: #222; margin: 16px 0 8px; font-weight: 600;
+  }
+  .doc-viewer-body h1 { font-size: 18px; }
+  .doc-viewer-body h2 { font-size: 15px; }
+  .doc-viewer-body h3 { font-size: 13px; }
+  .doc-viewer-body p { margin-bottom: 10px; }
+  .doc-viewer-body ul,.doc-viewer-body ol { margin: 8px 0 8px 20px; }
+  .doc-viewer-body li { margin-bottom: 4px; }
+  .doc-viewer-loading {
+    display: flex; align-items: center; justify-content: center;
+    height: 100%; color: #999; font-size: 13px;
+  }
+
 
   .loading {
     position: fixed; inset: 0; z-index: 500;
@@ -282,10 +339,17 @@
     <div id="tt-content"></div>
   </div>
 
-  <div class="path-info" id="path-info">
-    <span class="path-label">Path</span>
-    <span id="path-chain"></span>
-    <button class="path-clear" onclick="clearPath()">Clear</button>
+</div>
+
+<div class="doc-viewer" id="doc-viewer">
+  <button class="doc-viewer-close" onclick="closeDocViewer()">×</button>
+  <div class="doc-viewer-header">
+    <h3 id="doc-viewer-title">Document</h3>
+    <div class="doc-url" id="doc-viewer-url"></div>
+    <div class="doc-meta" id="doc-viewer-meta"></div>
+  </div>
+  <div class="doc-viewer-body" id="doc-viewer-body">
+    <div class="doc-viewer-loading">Click a document node to view its contents</div>
   </div>
 </div>
 
@@ -309,7 +373,7 @@ const DEFAULT_COLORS = { brand:{bg:'#555',size:60},category:{bg:'#777',size:60},
 const MATCH_COLOR = '#f0c850';
 
 const NODE_TYPE_META = {
-  brand:    { label: 'Brands',     color: '#e86c5f' },
+  brand:    { label: 'Services',   color: '#e86c5f' },
   category: { label: 'Categories', color: '#e8a84c' },
   document: { label: 'Documents',  color: '#4a8eda' },
   product:  { label: 'Products',   color: '#6dd490' },
@@ -317,9 +381,9 @@ const NODE_TYPE_META = {
 };
 
 const EDGE_TYPE_META = {
-  belongs_to_brand: { label: 'belongs_to_brand', color: '#e86c5f' },
-  in_category:      { label: 'in_category',      color: '#e8a84c' },
-  mentions:         { label: 'mentions',          color: '#6dd490' },
+  belongs_to_brand: { label: 'belongs_to_service', color: '#e86c5f' },
+  in_category:      { label: 'in_category',        color: '#e8a84c' },
+  mentions:         { label: 'mentions',            color: '#6dd490' },
 };
 
 let graphData = null, network = null, visNodes = null, visEdges = null;
@@ -334,11 +398,22 @@ let filterState = {
 
 // ── Init ────────────────────────────────────────────
 
+// Precomputed adjacency: nodeId -> Set of connected nodeIds
+let adjacency = {};
+
 function initGraph(data) {
   graphData = data;
   document.getElementById('loading').classList.add('hidden');
   data.nodeMap = {};
   data.nodes.forEach(n => { data.nodeMap[n.id] = n; });
+
+  // Build adjacency index for cascading filters
+  adjacency = {};
+  for (const n of data.nodes) adjacency[n.id] = new Set();
+  for (const e of data.edges) {
+    if (adjacency[e.source]) adjacency[e.source].add(e.target);
+    if (adjacency[e.target]) adjacency[e.target].add(e.source);
+  }
 
   initFilterState(data);
   buildControlPanel(data);
@@ -540,7 +615,7 @@ function buildNetwork(data) {
     const s = getNodeStyle(n);
     const label = n.type === 'document' ? n.label.split('/').pop().replace('.pdf','') : n.label;
     return {
-      id: n.id, label, fullLabel: n.label, nodeType: n.type,
+      id: n.id, label, origLabel: label, fullLabel: n.label, nodeType: n.type,
       shape: 'dot', size: s.size,
       color: { background: s.bg, border: s.bg, highlight: { background: MATCH_COLOR, border: '#fff' }, hover: { background: s.bg, border: '#333' } },
       font: { size: n.type==='brand'?16:n.type==='category'?14:11, color: '#333', face: 'Inter, sans-serif' },
@@ -573,34 +648,192 @@ function buildNetwork(data) {
   );
 
   network.on('click', params => {
-    if (params.nodes.length > 0) showTooltip(params.nodes[0], params.pointer.DOM.x, params.pointer.DOM.y);
-    else hideTooltip();
+    if (params.nodes.length > 0) {
+      showTooltip(params.nodes[0], params.pointer.DOM.x, params.pointer.DOM.y);
+    } else {
+      hideTooltip();
+      closeDocViewer();
+    }
+  });
+  network.on('doubleClick', params => {
+    if (params.nodes.length > 0) {
+      const node = graphData.nodeMap[params.nodes[0]];
+      if (node && node.meta && node.meta.url) {
+        window.open(node.meta.url, '_blank');
+      }
+    }
   });
 }
 
 // ── Apply filters ───────────────────────────────────
 
 function applyFilters() {
-  // Determine visible node IDs
-  const visibleNodeIds = new Set();
+  // Cascade order: brand -> category -> document -> product/concept
+  // Each level restricts the available set for the next level via graph edges.
+
+  // 1. Get user-selected IDs per type
+  const selected = {};
   for (const [type, values] of Object.entries(filterState.nodeValues)) {
+    selected[type] = new Set();
     if (!filterState.nodeTypes[type]) continue;
     for (const [id, v] of Object.entries(values)) {
-      if (v.enabled) visibleNodeIds.add(id);
+      if (v.enabled) selected[type].add(id);
     }
   }
 
-  // Update nodes
-  visNodes.update(allVisNodes.map(n => ({
-    id: n.id,
-    hidden: !visibleNodeIds.has(n.id),
-  })));
+  const allBrands = Object.keys(filterState.nodeValues.brand || {});
+  const allCats = Object.keys(filterState.nodeValues.category || {});
+  const brandFiltered = allBrands.length > 0 && selected.brand.size < allBrands.length;
+  const catFiltered = allCats.length > 0 && selected.category.size < allCats.length;
+  const anchorsFiltered = brandFiltered || catFiltered;
 
-  // Update edges: hidden if type disabled or either endpoint hidden
+  // 2. Compute reachable documents from selected services + categories
+  let reachableDocs = null;
+  if (anchorsFiltered) {
+    reachableDocs = new Set();
+    const anchors = new Set([...(selected.brand || []), ...(selected.category || [])]);
+    for (const anchorId of anchors) {
+      const neighbors = adjacency[anchorId] || new Set();
+      for (const nId of neighbors) {
+        if (graphData.nodeMap[nId]?.type === 'document') reachableDocs.add(nId);
+      }
+    }
+  }
+
+  // 3. Visible documents = intersection of user selection and reachable
+  const visibleDocs = new Set();
+  for (const docId of (selected.document || [])) {
+    if (!reachableDocs || reachableDocs.has(docId)) visibleDocs.add(docId);
+  }
+
+  // 4. Compute reachable entities from visible documents
+  const reachableEntities = new Set();
+  if (anchorsFiltered) {
+    for (const docId of visibleDocs) {
+      for (const nId of (adjacency[docId] || [])) {
+        const n = graphData.nodeMap[nId];
+        if (n && (n.type === 'product' || n.type === 'concept')) reachableEntities.add(nId);
+      }
+    }
+  }
+
+  // 5. Visible entities
+  const visibleProducts = new Set();
+  for (const id of (selected.product || [])) {
+    if (!anchorsFiltered || reachableEntities.has(id)) visibleProducts.add(id);
+  }
+  const visibleConcepts = new Set();
+  for (const id of (selected.concept || [])) {
+    if (!anchorsFiltered || reachableEntities.has(id)) visibleConcepts.add(id);
+  }
+
+  // 6. Final sets — rendered (shown) vs edge-routing (for edge visibility)
+  // Documents that are type-toggled off still act as edge routers so
+  // relationships between services/categories and entities remain visible.
+  const renderedNodeIds = new Set([
+    ...(selected.brand || []),
+    ...(selected.category || []),
+    ...visibleDocs,
+    ...visibleProducts,
+    ...visibleConcepts,
+  ]);
+
+  // Edge-routing includes rendered nodes + documents that are reachable
+  // but type-hidden (so edges through them still connect visible nodes)
+  const docsTypeOff = !filterState.nodeTypes.document;
+  const edgeRouteIds = new Set(renderedNodeIds);
+  if (docsTypeOff && reachableDocs) {
+    for (const id of reachableDocs) edgeRouteIds.add(id);
+  } else if (docsTypeOff) {
+    // No service filter active — all docs are potential routers
+    for (const id of Object.keys(filterState.nodeValues.document || {})) edgeRouteIds.add(id);
+  }
+
+  // 7. Update graph nodes
+  // Nodes in edgeRouteIds but not renderedNodeIds become invisible
+  // (size 0, transparent) rather than hidden, so edges still route through them.
+  visNodes.update(allVisNodes.map(n => {
+    if (renderedNodeIds.has(n.id)) {
+      // Restore original style in case it was previously an invisible router
+      const s = getNodeStyle(graphData.nodeMap[n.id]);
+      return { id: n.id, hidden: false, size: s.size, label: n.origLabel,
+        color: { background: s.bg, border: s.bg,
+          highlight: { background: MATCH_COLOR, border: '#fff' },
+          hover: { background: s.bg, border: '#333' } },
+        font: { size: n.nodeType==='brand'?16:n.nodeType==='category'?14:11,
+          color: '#333', face: 'Inter, sans-serif' },
+        borderWidth: 2, shadow: { enabled: false } };
+    }
+    if (edgeRouteIds.has(n.id)) {
+      // Invisible router — present for edges but not visible to the user
+      return { id: n.id, hidden: false, size: 0, label: '',
+        color: { background: 'transparent', border: 'transparent' },
+        font: { size: 0 }, borderWidth: 0, shadow: { enabled: false } };
+    }
+    return { id: n.id, hidden: true };
+  }));
+
+  // 8. Update graph edges — use edge-routing set so edges through hidden docs still show
   visEdges.update(allVisEdges.map(e => ({
     id: e.id,
-    hidden: !filterState.edgeTypes[e.edgeType] || !visibleNodeIds.has(e.from) || !visibleNodeIds.has(e.to),
+    hidden: !filterState.edgeTypes[e.edgeType] || !edgeRouteIds.has(e.from) || !edgeRouteIds.has(e.to),
   })));
+
+  // 9. Cascade filter panel — hide unavailable items in downstream sections
+  if (anchorsFiltered) {
+    // Update document checkboxes: dim unavailable ones
+    const docItems = document.querySelectorAll('#values-document .cp-value-item');
+    docItems.forEach(el => {
+      const id = el.dataset.id;
+      if (reachableDocs && !reachableDocs.has(id)) {
+        el.classList.add('unavailable');
+      } else {
+        el.classList.remove('unavailable');
+      }
+    });
+    // Update entity checkboxes
+    for (const type of ['product', 'concept']) {
+      const items = document.querySelectorAll(`#values-${type} .cp-value-item`);
+      items.forEach(el => {
+        if (!reachableEntities.has(el.dataset.id)) {
+          el.classList.add('unavailable');
+        } else {
+          el.classList.remove('unavailable');
+        }
+      });
+    }
+    // Update category checkboxes when only brands filtered
+    if (brandFiltered) {
+      const reachableCats = new Set();
+      for (const docId of reachableDocs) {
+        for (const nId of (adjacency[docId] || [])) {
+          if (graphData.nodeMap[nId]?.type === 'category') reachableCats.add(nId);
+        }
+      }
+      const catItems = document.querySelectorAll('#values-category .cp-value-item');
+      catItems.forEach(el => {
+        if (!reachableCats.has(el.dataset.id)) {
+          el.classList.add('unavailable');
+        } else {
+          el.classList.remove('unavailable');
+        }
+      });
+    }
+  } else {
+    // Clear all unavailable markers
+    document.querySelectorAll('.cp-value-item.unavailable').forEach(el => el.classList.remove('unavailable'));
+  }
+
+  // Update counts in section headers
+  for (const type of ['brand','category','document','product','concept']) {
+    const section = document.querySelector(`[data-section="node-${type}"]`);
+    if (!section) continue;
+    const countEl = section.querySelector('.cp-count');
+    if (!countEl) continue;
+    const total = Object.keys(filterState.nodeValues[type] || {}).length;
+    const available = document.querySelectorAll(`#values-${type} .cp-value-item:not(.unavailable)`).length;
+    countEl.textContent = anchorsFiltered && type !== 'brand' ? `${available}/${total}` : `${total}`;
+  }
 
   updateStats();
 }
@@ -624,20 +857,20 @@ function updateStats() {
 function showTooltip(nodeId, x, y) {
   const node = graphData.nodeMap[nodeId];
   if (!node) return;
+
+  // Document nodes open the doc viewer panel
+  if (node.type === 'document') {
+    hideTooltip();
+    openDocViewer(nodeId, node);
+    return;
+  }
+
   const code = getBrandCode(node);
   const theme = code ? BRAND_THEMES[code] : null;
   document.documentElement.style.setProperty('--tt-primary', theme?.primary || '#555');
   document.documentElement.style.setProperty('--tt-secondary', theme?.secondary || '#777');
 
-  let html = '';
-  if (node.type === 'document') {
-    html += `<div class="tt-row"><strong>File:</strong> ${node.label}</div>`;
-    const vn = allVisNodes.find(n => n.id === nodeId);
-    if (vn?.chunkCount) html += `<div class="tt-row"><strong>Chunks:</strong> ${vn.chunkCount}</div>`;
-    if (matchedDocIds.has(nodeId)) html += `<div class="tt-matched">★ Retrieved in last query</div>`;
-  } else {
-    html += `<div class="tt-row"><strong>${node.type}:</strong> ${node.label}</div>`;
-  }
+  let html = `<div class="tt-row"><strong>${node.type}:</strong> ${node.label}</div>`;
   const panel = document.getElementById('node-tooltip');
   document.getElementById('tt-content').innerHTML = html;
   panel.style.left = (x + 16) + 'px';
@@ -646,6 +879,56 @@ function showTooltip(nodeId, x, y) {
 }
 
 function hideTooltip() { document.getElementById('node-tooltip').classList.remove('visible'); }
+
+// ── Document Viewer ──────────────────────────────────
+
+async function openDocViewer(nodeId, node) {
+  const viewer = document.getElementById('doc-viewer');
+  const title = node.meta?.title || node.label;
+  document.getElementById('doc-viewer-title').textContent = title;
+
+  if (node.meta?.url) {
+    document.getElementById('doc-viewer-url').innerHTML = `<a href="${node.meta.url}" target="_blank">${node.meta.url} ↗</a>`;
+  } else {
+    document.getElementById('doc-viewer-url').innerHTML = '';
+  }
+
+  const vn = allVisNodes.find(n => n.id === nodeId);
+  document.getElementById('doc-viewer-meta').textContent = node.label + (vn?.chunkCount ? ` · ${vn.chunkCount} chunks` : '');
+
+  document.getElementById('doc-viewer-body').innerHTML = '<div class="doc-viewer-loading">Loading...</div>';
+  viewer.classList.add('visible');
+
+  // Extract file path from doc node id (strip "doc:" prefix)
+  const file = nodeId.startsWith('doc:') ? nodeId.slice(4) : node.label;
+  try {
+    const resp = await fetch('/api/document?file=' + encodeURIComponent(file));
+    const data = await resp.json();
+    if (data.error) {
+      document.getElementById('doc-viewer-body').innerHTML = `<div class="doc-viewer-loading">${data.error}</div>`;
+      return;
+    }
+    // Render text as simple HTML with markdown-like formatting
+    const html = data.text
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/^### (.+)$/gm, '<h3>$1</h3>')
+      .replace(/^## (.+)$/gm, '<h2>$1</h2>')
+      .replace(/^# (.+)$/gm, '<h1>$1</h1>')
+      .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+      .replace(/^[-*] (.+)$/gm, '<li>$1</li>')
+      .replace(/\n\n/g, '</p><p>')
+      .replace(/\n/g, '<br>');
+    document.getElementById('doc-viewer-body').innerHTML = `<p>${html}</p>`;
+  } catch (e) {
+    document.getElementById('doc-viewer-body').innerHTML = `<div class="doc-viewer-loading">Failed to load: ${e.message}</div>`;
+  }
+}
+
+function closeDocViewer() {
+  document.getElementById('doc-viewer').classList.remove('visible');
+}
 
 // ── Path Highlighting ───────────────────────────────
 
@@ -656,6 +939,7 @@ function highlightPath(pathData) {
   pathData.edges.forEach(e => { pe.add(e.source+'|'+e.target); pe.add(e.target+'|'+e.source); });
   matchedDocIds = new Set(pathData.nodes.filter(id => graphData.nodeMap[id]?.type === 'document'));
 
+  // Hide all unrelated nodes, show only path-relevant ones
   visNodes.update(allVisNodes.map(n => {
     if (pn.has(n.id)) {
       const s = getNodeStyle(graphData.nodeMap[n.id]);
@@ -665,43 +949,24 @@ function highlightPath(pathData) {
         font: { size:n.nodeType==='brand'?18:n.nodeType==='category'?16:13, color:'#111', face:'Inter, sans-serif', bold:true },
         borderWidth:3, shadow:{enabled:true,color:isDoc?MATCH_COLOR:s.bg,size:12,x:0,y:0} };
     }
-    return { id:n.id, hidden:false, size:6,
-      color:{background:'#ddd',border:'#ccc'}, font:{size:0,color:'transparent'}, borderWidth:1, shadow:{enabled:false} };
+    return { id:n.id, hidden:true };
   }));
 
+  // Hide all unrelated edges, show only path edges
   visEdges.update(allVisEdges.map(e => {
     if (pe.has(e.from+'|'+e.to)) {
       return { id:e.id, hidden:false, color:{color:MATCH_COLOR}, width:2, shadow:{enabled:true,color:MATCH_COLOR,size:6,x:0,y:0} };
     }
-    return { id:e.id, hidden:false, color:{color:'#e0e0e0'}, width:0.3, shadow:{enabled:false} };
+    return { id:e.id, hidden:true };
   }));
 
   const pathIds = pathData.nodes.filter(id => visNodes.get(id));
   if (pathIds.length) network.fit({ nodes:pathIds, animation:{duration:800,easingFunction:'easeInOutQuad'} });
-  showPathBar(pathData);
-}
-
-function showPathBar(pathData) {
-  const byType = { brand:[],category:[],product:[],concept:[],document:[] };
-  pathData.nodes.forEach(id => { const n=graphData.nodeMap[id]; if(n&&byType[n.type]) byType[n.type].push(n); });
-  let html='', first=true;
-  for (const type of ['brand','category','product','concept','document']) {
-    if (!byType[type]?.length) continue;
-    if (!first) html+='<span class="path-arrow">→</span>';
-    first=false;
-    byType[type].forEach(n => {
-      const lb=n.type==='document'?n.label.split('/').pop().replace('.pdf',''):n.label;
-      html+='<span class="path-node" style="background:'+getNodeStyle(n).bg+'">'+lb+'</span>';
-    });
-  }
-  document.getElementById('path-chain').innerHTML=html;
-  document.getElementById('path-info').classList.add('visible');
 }
 
 function clearPath() {
   if (!network) return;
   matchedDocIds.clear();
-  document.getElementById('path-info').classList.remove('visible');
   visNodes.update(allVisNodes.map(n => {
     const s=getNodeStyle(graphData.nodeMap[n.id]);
     return { id:n.id, hidden:false, size:s.size,

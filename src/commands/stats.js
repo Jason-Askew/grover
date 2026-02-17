@@ -1,10 +1,16 @@
 const fs = require('fs');
-const { EMBEDDINGS_FILE, GRAPH_FILE, MEMORY_FILE } = require('../config');
+const { EMBEDDINGS_FILE, GRAPH_FILE, MEMORY_FILE, resolveIndex } = require('../config');
 const { loadIndex } = require('../persistence/index-persistence');
 
-function stats() {
-  const index = loadIndex();
+function stats(indexName = null) {
+  const paths = indexName ? resolveIndex(indexName) : null;
+  let index = loadIndex(paths);
+  if (!index && indexName === 'Westpac') index = loadIndex();
   if (!index) { console.log('No index found. Run: node search.js ingest'); return; }
+
+  const embeddingsFile = paths ? paths.embeddingsFile : EMBEDDINGS_FILE;
+  const graphFile = paths ? paths.graphFile : GRAPH_FILE;
+  const memoryFile = paths ? paths.memoryFile : MEMORY_FILE;
 
   const files = new Map();
   for (const r of index.records) {
@@ -12,11 +18,12 @@ function stats() {
     files.get(r.file).chunks++;
   }
 
-  console.log(`\n=== Index Statistics ===`);
-  console.log(`Total PDFs: ${files.size}`);
+  const label = indexName ? ` (${indexName})` : '';
+  console.log(`\n=== Index Statistics${label} ===`);
+  console.log(`Total files: ${files.size}`);
   console.log(`Total chunks: ${index.records.length}`);
   console.log(`Embedding dimensions: ${index.dim}`);
-  console.log(`Index size: ${(fs.statSync(EMBEDDINGS_FILE).size / 1024 / 1024).toFixed(1)} MB`);
+  console.log(`Index size: ${(fs.statSync(embeddingsFile).size / 1024 / 1024).toFixed(1)} MB`);
 
   if (index.graph) {
     const g = index.graph;
@@ -35,7 +42,7 @@ function stats() {
     }
     console.log(`Edges: ${totalEdges}`);
     console.log(`Entities tracked: ${g.entityIndex.size}`);
-    console.log(`Graph file: ${(fs.statSync(GRAPH_FILE).size / 1024).toFixed(0)} KB`);
+    console.log(`Graph file: ${(fs.statSync(graphFile).size / 1024).toFixed(0)} KB`);
   }
 
   const dirs = new Map();
@@ -51,13 +58,13 @@ function stats() {
     console.log(`  ${dir}: ${info.files} files, ${info.chunks} chunks`);
   }
 
-  if (fs.existsSync(MEMORY_FILE)) {
+  if (fs.existsSync(memoryFile)) {
     try {
-      const memData = JSON.parse(fs.readFileSync(MEMORY_FILE, 'utf-8'));
+      const memData = JSON.parse(fs.readFileSync(memoryFile, 'utf-8'));
       console.log(`\n=== Conversation Memory ===`);
       console.log(`Past interactions: ${(memData.memories || []).length}`);
       console.log(`History messages: ${(memData.history || []).length}`);
-      console.log(`Memory file: ${(fs.statSync(MEMORY_FILE).size / 1024).toFixed(0)} KB`);
+      console.log(`Memory file: ${(fs.statSync(memoryFile).size / 1024).toFixed(0)} KB`);
     } catch (e) {}
   }
 }
