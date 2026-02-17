@@ -101,6 +101,38 @@ const EXTRA_SEEDS = [
   // Going overseas
   `${BASE}/travelling-outside-australia`,
   `${BASE}/payment-while-outside-australia`,
+  // Veterans / DVA
+  `${BASE}/veterans`,
+  `${BASE}/veteran-payment-affects-your-income-support-payment`,
+  `${BASE}/veterans-supplement`,
+  `${BASE}/veteran-gold-card`,
+  `${BASE}/veteran-white-card`,
+  `${BASE}/veteran-orange-card`,
+  `${BASE}/defence-force-income-support-allowance`,
+  `${BASE}/service-pension`,
+  `${BASE}/income-support-supplement`,
+  `${BASE}/veterans-affairs-payments`,
+  `${BASE}/dva`,
+  `${BASE}/department-of-veterans-affairs`,
+  `${BASE}/veteran-healthcare`,
+  `${BASE}/veteran-card`,
+  `${BASE}/defence-service-homes`,
+  `${BASE}/war-widow-pension`,
+  `${BASE}/war-widows`,
+  `${BASE}/military-rehabilitation`,
+  `${BASE}/veteran-carer`,
+  `${BASE}/veterans-home-care`,
+  `${BASE}/veteran-payment`,
+  `${BASE}/veteran-entitlements`,
+  `${BASE}/help-for-veterans`,
+  `${BASE}/getting-help-from-dva`,
+  `${BASE}/dva-payments`,
+  `${BASE}/dva-health-card`,
+  `${BASE}/partner-service-pension`,
+  `${BASE}/totally-permanently-incapacitated-pension`,
+  `${BASE}/incapacity-payments`,
+  `${BASE}/special-rate-disability-pension`,
+  `${BASE}/veteran-disability-pension`,
 ];
 
 // Category mapping based on URL path patterns
@@ -122,6 +154,7 @@ const CATEGORY_MAP = [
   { pattern: /\/(bereavement|crisis-and-special|emergency-and-disaster)/, dir: 'crisis' },
   { pattern: /\/(indigenous-australian)/, dir: 'indigenous' },
   { pattern: /\/(newly-arrived|refugee|travelling-outside|payment-while-outside)/, dir: 'migrants' },
+  { pattern: /\/(veteran|dva|service-pension|war-widow|war-widows|military-rehabilitation|defence-force-income|defence-service-home|incapacity-payment|totally-permanently-incapacitated|special-rate-disability-pension)/, dir: 'veterans' },
 ];
 
 function categorise(url) {

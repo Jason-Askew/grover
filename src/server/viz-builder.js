@@ -4,8 +4,12 @@ function buildVizData(graph) {
   const vizNodes = [];
   const vizNodeIds = new Set();
 
+  // Skip category:general — it's a catch-all with too many edges and destabilises the graph
+  const SKIP_IDS = new Set(['category:general']);
+
   for (const [id, node] of graph.nodes) {
     if (node.type === 'chunk') continue;
+    if (SKIP_IDS.has(id)) continue;
     vizNodes.push({ id, type: node.type, label: node.label, meta: node.meta || {} });
     vizNodeIds.add(id);
   }

@@ -156,6 +156,10 @@
     text-overflow: ellipsis;
     white-space: nowrap;
   }
+  .cp-value-item.unavailable {
+    opacity: 0.25;
+    pointer-events: none;
+  }
   .cp-select-all {
     font-size: 10px;
     color: #4a8eda;
@@ -369,7 +373,7 @@ const DEFAULT_COLORS = { brand:{bg:'#555',size:60},category:{bg:'#777',size:60},
 const MATCH_COLOR = '#f0c850';
 
 const NODE_TYPE_META = {
-  brand:    { label: 'Brands',     color: '#e86c5f' },
+  brand:    { label: 'Services',   color: '#e86c5f' },
   category: { label: 'Categories', color: '#e8a84c' },
   document: { label: 'Documents',  color: '#4a8eda' },
   product:  { label: 'Products',   color: '#6dd490' },
@@ -377,9 +381,9 @@ const NODE_TYPE_META = {
 };
 
 const EDGE_TYPE_META = {
-  belongs_to_brand: { label: 'belongs_to_brand', color: '#e86c5f' },
-  in_category:      { label: 'in_category',      color: '#e8a84c' },
-  mentions:         { label: 'mentions',          color: '#6dd490' },
+  belongs_to_brand: { label: 'belongs_to_service', color: '#e86c5f' },
+  in_category:      { label: 'in_category',        color: '#e8a84c' },
+  mentions:         { label: 'mentions',            color: '#6dd490' },
 };
 
 let graphData = null, network = null, visNodes = null, visEdges = null;
@@ -394,11 +398,22 @@ let filterState = {
 
 // ── Init ────────────────────────────────────────────
 
+// Precomputed adjacency: nodeId -> Set of connected nodeIds
+let adjacency = {};
+
 function initGraph(data) {
   graphData = data;
   document.getElementById('loading').classList.add('hidden');
   data.nodeMap = {};
   data.nodes.forEach(n => { data.nodeMap[n.id] = n; });
+
+  // Build adjacency index for cascading filters
+  adjacency = {};
+  for (const n of data.nodes) adjacency[n.id] = new Set();
+  for (const e of data.edges) {
+    if (adjacency[e.source]) adjacency[e.source].add(e.target);
+    if (adjacency[e.target]) adjacency[e.target].add(e.source);
+  }
 
   initFilterState(data);
   buildControlPanel(data);
@@ -600,7 +615,7 @@ function buildNetwork(data) {
     const s = getNodeStyle(n);
     const label = n.type === 'document' ? n.label.split('/').pop().replace('.pdf','') : n.label;
     return {
-      id: n.id, label, fullLabel: n.label, nodeType: n.type,
+      id: n.id, label, origLabel: label, fullLabel: n.label, nodeType: n.type,
       shape: 'dot', size: s.size,
       color: { background: s.bg, border: s.bg, highlight: { background: MATCH_COLOR, border: '#fff' }, hover: { background: s.bg, border: '#333' } },
       font: { size: n.type==='brand'?16:n.type==='category'?14:11, color: '#333', face: 'Inter, sans-serif' },
@@ -653,26 +668,172 @@ function buildNetwork(data) {
 // ── Apply filters ───────────────────────────────────
 
 function applyFilters() {
-  // Determine visible node IDs
-  const visibleNodeIds = new Set();
+  // Cascade order: brand -> category -> document -> product/concept
+  // Each level restricts the available set for the next level via graph edges.
+
+  // 1. Get user-selected IDs per type
+  const selected = {};
   for (const [type, values] of Object.entries(filterState.nodeValues)) {
+    selected[type] = new Set();
     if (!filterState.nodeTypes[type]) continue;
     for (const [id, v] of Object.entries(values)) {
-      if (v.enabled) visibleNodeIds.add(id);
+      if (v.enabled) selected[type].add(id);
     }
   }
 
-  // Update nodes
-  visNodes.update(allVisNodes.map(n => ({
-    id: n.id,
-    hidden: !visibleNodeIds.has(n.id),
-  })));
+  const allBrands = Object.keys(filterState.nodeValues.brand || {});
+  const allCats = Object.keys(filterState.nodeValues.category || {});
+  const brandFiltered = allBrands.length > 0 && selected.brand.size < allBrands.length;
+  const catFiltered = allCats.length > 0 && selected.category.size < allCats.length;
+  const anchorsFiltered = brandFiltered || catFiltered;
 
-  // Update edges: hidden if type disabled or either endpoint hidden
+  // 2. Compute reachable documents from selected services + categories
+  let reachableDocs = null;
+  if (anchorsFiltered) {
+    reachableDocs = new Set();
+    const anchors = new Set([...(selected.brand || []), ...(selected.category || [])]);
+    for (const anchorId of anchors) {
+      const neighbors = adjacency[anchorId] || new Set();
+      for (const nId of neighbors) {
+        if (graphData.nodeMap[nId]?.type === 'document') reachableDocs.add(nId);
+      }
+    }
+  }
+
+  // 3. Visible documents = intersection of user selection and reachable
+  const visibleDocs = new Set();
+  for (const docId of (selected.document || [])) {
+    if (!reachableDocs || reachableDocs.has(docId)) visibleDocs.add(docId);
+  }
+
+  // 4. Compute reachable entities from visible documents
+  const reachableEntities = new Set();
+  if (anchorsFiltered) {
+    for (const docId of visibleDocs) {
+      for (const nId of (adjacency[docId] || [])) {
+        const n = graphData.nodeMap[nId];
+        if (n && (n.type === 'product' || n.type === 'concept')) reachableEntities.add(nId);
+      }
+    }
+  }
+
+  // 5. Visible entities
+  const visibleProducts = new Set();
+  for (const id of (selected.product || [])) {
+    if (!anchorsFiltered || reachableEntities.has(id)) visibleProducts.add(id);
+  }
+  const visibleConcepts = new Set();
+  for (const id of (selected.concept || [])) {
+    if (!anchorsFiltered || reachableEntities.has(id)) visibleConcepts.add(id);
+  }
+
+  // 6. Final sets — rendered (shown) vs edge-routing (for edge visibility)
+  // Documents that are type-toggled off still act as edge routers so
+  // relationships between services/categories and entities remain visible.
+  const renderedNodeIds = new Set([
+    ...(selected.brand || []),
+    ...(selected.category || []),
+    ...visibleDocs,
+    ...visibleProducts,
+    ...visibleConcepts,
+  ]);
+
+  // Edge-routing includes rendered nodes + documents that are reachable
+  // but type-hidden (so edges through them still connect visible nodes)
+  const docsTypeOff = !filterState.nodeTypes.document;
+  const edgeRouteIds = new Set(renderedNodeIds);
+  if (docsTypeOff && reachableDocs) {
+    for (const id of reachableDocs) edgeRouteIds.add(id);
+  } else if (docsTypeOff) {
+    // No service filter active — all docs are potential routers
+    for (const id of Object.keys(filterState.nodeValues.document || {})) edgeRouteIds.add(id);
+  }
+
+  // 7. Update graph nodes
+  // Nodes in edgeRouteIds but not renderedNodeIds become invisible
+  // (size 0, transparent) rather than hidden, so edges still route through them.
+  visNodes.update(allVisNodes.map(n => {
+    if (renderedNodeIds.has(n.id)) {
+      // Restore original style in case it was previously an invisible router
+      const s = getNodeStyle(graphData.nodeMap[n.id]);
+      return { id: n.id, hidden: false, size: s.size, label: n.origLabel,
+        color: { background: s.bg, border: s.bg,
+          highlight: { background: MATCH_COLOR, border: '#fff' },
+          hover: { background: s.bg, border: '#333' } },
+        font: { size: n.nodeType==='brand'?16:n.nodeType==='category'?14:11,
+          color: '#333', face: 'Inter, sans-serif' },
+        borderWidth: 2, shadow: { enabled: false } };
+    }
+    if (edgeRouteIds.has(n.id)) {
+      // Invisible router — present for edges but not visible to the user
+      return { id: n.id, hidden: false, size: 0, label: '',
+        color: { background: 'transparent', border: 'transparent' },
+        font: { size: 0 }, borderWidth: 0, shadow: { enabled: false } };
+    }
+    return { id: n.id, hidden: true };
+  }));
+
+  // 8. Update graph edges — use edge-routing set so edges through hidden docs still show
   visEdges.update(allVisEdges.map(e => ({
     id: e.id,
-    hidden: !filterState.edgeTypes[e.edgeType] || !visibleNodeIds.has(e.from) || !visibleNodeIds.has(e.to),
+    hidden: !filterState.edgeTypes[e.edgeType] || !edgeRouteIds.has(e.from) || !edgeRouteIds.has(e.to),
   })));
+
+  // 9. Cascade filter panel — hide unavailable items in downstream sections
+  if (anchorsFiltered) {
+    // Update document checkboxes: dim unavailable ones
+    const docItems = document.querySelectorAll('#values-document .cp-value-item');
+    docItems.forEach(el => {
+      const id = el.dataset.id;
+      if (reachableDocs && !reachableDocs.has(id)) {
+        el.classList.add('unavailable');
+      } else {
+        el.classList.remove('unavailable');
+      }
+    });
+    // Update entity checkboxes
+    for (const type of ['product', 'concept']) {
+      const items = document.querySelectorAll(`#values-${type} .cp-value-item`);
+      items.forEach(el => {
+        if (!reachableEntities.has(el.dataset.id)) {
+          el.classList.add('unavailable');
+        } else {
+          el.classList.remove('unavailable');
+        }
+      });
+    }
+    // Update category checkboxes when only brands filtered
+    if (brandFiltered) {
+      const reachableCats = new Set();
+      for (const docId of reachableDocs) {
+        for (const nId of (adjacency[docId] || [])) {
+          if (graphData.nodeMap[nId]?.type === 'category') reachableCats.add(nId);
+        }
+      }
+      const catItems = document.querySelectorAll('#values-category .cp-value-item');
+      catItems.forEach(el => {
+        if (!reachableCats.has(el.dataset.id)) {
+          el.classList.add('unavailable');
+        } else {
+          el.classList.remove('unavailable');
+        }
+      });
+    }
+  } else {
+    // Clear all unavailable markers
+    document.querySelectorAll('.cp-value-item.unavailable').forEach(el => el.classList.remove('unavailable'));
+  }
+
+  // Update counts in section headers
+  for (const type of ['brand','category','document','product','concept']) {
+    const section = document.querySelector(`[data-section="node-${type}"]`);
+    if (!section) continue;
+    const countEl = section.querySelector('.cp-count');
+    if (!countEl) continue;
+    const total = Object.keys(filterState.nodeValues[type] || {}).length;
+    const available = document.querySelectorAll(`#values-${type} .cp-value-item:not(.unavailable)`).length;
+    countEl.textContent = anchorsFiltered && type !== 'brand' ? `${available}/${total}` : `${total}`;
+  }
 
   updateStats();
 }
