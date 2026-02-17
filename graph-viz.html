@@ -185,7 +185,7 @@
   }
   #graph-container > div { width: 100%; height: 100%; }
 
-  /* Click tooltip */
+  /* Click tooltip (non-document nodes) */
   .node-tooltip {
     position: absolute;
     z-index: 100;
@@ -213,6 +213,83 @@
     margin-top: 6px; padding-top: 6px;
     border-top: 1px solid rgba(255,255,255,0.2);
     font-size: 12px; color: #f0c850;
+  }
+
+  /* Document viewer panel */
+  .doc-viewer {
+    position: fixed;
+    top: 0; bottom: 0;
+    left: 280px;
+    width: 480px;
+    z-index: 150;
+    background: #fff;
+    border-right: 1px solid #e0e0e0;
+    display: none;
+    flex-direction: column;
+    box-shadow: 4px 0 20px rgba(0,0,0,0.08);
+  }
+  .doc-viewer.visible { display: flex; }
+  .doc-viewer-header {
+    padding: 14px 16px;
+    border-bottom: 1px solid #e8e8e8;
+    flex-shrink: 0;
+  }
+  .doc-viewer-header h3 {
+    font-family: 'Inter', sans-serif;
+    font-size: 14px;
+    font-weight: 600;
+    color: #333;
+    margin-bottom: 4px;
+    line-height: 1.4;
+  }
+  .doc-viewer-header .doc-url {
+    font-size: 11px;
+    font-family: 'Inter', sans-serif;
+  }
+  .doc-viewer-header .doc-url a {
+    color: #e67e22;
+    text-decoration: none;
+    transition: color 0.15s;
+  }
+  .doc-viewer-header .doc-url a:hover { color: #d35400; text-decoration: underline; }
+  .doc-viewer-header .doc-meta {
+    font-size: 11px;
+    color: #999;
+    font-family: 'Inter', sans-serif;
+    margin-top: 4px;
+  }
+  .doc-viewer-close {
+    position: absolute; top: 10px; right: 12px;
+    background: none; border: 1px solid #ddd;
+    border-radius: 4px; padding: 2px 8px;
+    font-size: 14px; cursor: pointer; color: #888;
+    font-family: 'Inter', sans-serif;
+    transition: all 0.15s;
+  }
+  .doc-viewer-close:hover { color: #333; border-color: #999; }
+  .doc-viewer-body {
+    flex: 1;
+    overflow-y: auto;
+    padding: 16px;
+    font-family: 'Inter', sans-serif;
+    font-size: 13px;
+    line-height: 1.7;
+    color: #444;
+  }
+  .doc-viewer-body::-webkit-scrollbar { width: 4px; }
+  .doc-viewer-body::-webkit-scrollbar-thumb { background: #ddd; border-radius: 2px; }
+  .doc-viewer-body h1,.doc-viewer-body h2,.doc-viewer-body h3 {
+    color: #222; margin: 16px 0 8px; font-weight: 600;
+  }
+  .doc-viewer-body h1 { font-size: 18px; }
+  .doc-viewer-body h2 { font-size: 15px; }
+  .doc-viewer-body h3 { font-size: 13px; }
+  .doc-viewer-body p { margin-bottom: 10px; }
+  .doc-viewer-body ul,.doc-viewer-body ol { margin: 8px 0 8px 20px; }
+  .doc-viewer-body li { margin-bottom: 4px; }
+  .doc-viewer-loading {
+    display: flex; align-items: center; justify-content: center;
+    height: 100%; color: #999; font-size: 13px;
   }
 
 
@@ -258,6 +335,18 @@
     <div id="tt-content"></div>
   </div>
 
+</div>
+
+<div class="doc-viewer" id="doc-viewer">
+  <button class="doc-viewer-close" onclick="closeDocViewer()">×</button>
+  <div class="doc-viewer-header">
+    <h3 id="doc-viewer-title">Document</h3>
+    <div class="doc-url" id="doc-viewer-url"></div>
+    <div class="doc-meta" id="doc-viewer-meta"></div>
+  </div>
+  <div class="doc-viewer-body" id="doc-viewer-body">
+    <div class="doc-viewer-loading">Click a document node to view its contents</div>
+  </div>
 </div>
 
 <script>
@@ -544,8 +633,12 @@ function buildNetwork(data) {
   );
 
   network.on('click', params => {
-    if (params.nodes.length > 0) showTooltip(params.nodes[0], params.pointer.DOM.x, params.pointer.DOM.y);
-    else hideTooltip();
+    if (params.nodes.length > 0) {
+      showTooltip(params.nodes[0], params.pointer.DOM.x, params.pointer.DOM.y);
+    } else {
+      hideTooltip();
+      closeDocViewer();
+    }
   });
   network.on('doubleClick', params => {
     if (params.nodes.length > 0) {
@@ -603,22 +696,20 @@ function updateStats() {
 function showTooltip(nodeId, x, y) {
   const node = graphData.nodeMap[nodeId];
   if (!node) return;
+
+  // Document nodes open the doc viewer panel
+  if (node.type === 'document') {
+    hideTooltip();
+    openDocViewer(nodeId, node);
+    return;
+  }
+
   const code = getBrandCode(node);
   const theme = code ? BRAND_THEMES[code] : null;
   document.documentElement.style.setProperty('--tt-primary', theme?.primary || '#555');
   document.documentElement.style.setProperty('--tt-secondary', theme?.secondary || '#777');
 
-  let html = '';
-  if (node.type === 'document') {
-    const title = node.meta?.title || node.label;
-    html += `<div class="tt-row"><strong>${title}</strong></div>`;
-    if (node.meta?.url) html += `<div class="tt-row"><a href="${node.meta.url}" target="_blank" style="color:#2a5a9a;text-decoration:none;font-size:11px">${node.meta.url}</a></div>`;
-    const vn = allVisNodes.find(n => n.id === nodeId);
-    if (vn?.chunkCount) html += `<div class="tt-row"><strong>Chunks:</strong> ${vn.chunkCount}</div>`;
-    if (matchedDocIds.has(nodeId)) html += `<div class="tt-matched">★ Retrieved in last query</div>`;
-  } else {
-    html += `<div class="tt-row"><strong>${node.type}:</strong> ${node.label}</div>`;
-  }
+  let html = `<div class="tt-row"><strong>${node.type}:</strong> ${node.label}</div>`;
   const panel = document.getElementById('node-tooltip');
   document.getElementById('tt-content').innerHTML = html;
   panel.style.left = (x + 16) + 'px';
@@ -627,6 +718,56 @@ function showTooltip(nodeId, x, y) {
 }
 
 function hideTooltip() { document.getElementById('node-tooltip').classList.remove('visible'); }
+
+// ── Document Viewer ──────────────────────────────────
+
+async function openDocViewer(nodeId, node) {
+  const viewer = document.getElementById('doc-viewer');
+  const title = node.meta?.title || node.label;
+  document.getElementById('doc-viewer-title').textContent = title;
+
+  if (node.meta?.url) {
+    document.getElementById('doc-viewer-url').innerHTML = `<a href="${node.meta.url}" target="_blank">${node.meta.url} ↗</a>`;
+  } else {
+    document.getElementById('doc-viewer-url').innerHTML = '';
+  }
+
+  const vn = allVisNodes.find(n => n.id === nodeId);
+  document.getElementById('doc-viewer-meta').textContent = node.label + (vn?.chunkCount ? ` · ${vn.chunkCount} chunks` : '');
+
+  document.getElementById('doc-viewer-body').innerHTML = '<div class="doc-viewer-loading">Loading...</div>';
+  viewer.classList.add('visible');
+
+  // Extract file path from doc node id (strip "doc:" prefix)
+  const file = nodeId.startsWith('doc:') ? nodeId.slice(4) : node.label;
+  try {
+    const resp = await fetch('/api/document?file=' + encodeURIComponent(file));
+    const data = await resp.json();
+    if (data.error) {
+      document.getElementById('doc-viewer-body').innerHTML = `<div class="doc-viewer-loading">${data.error}</div>`;
+      return;
+    }
+    // Render text as simple HTML with markdown-like formatting
+    const html = data.text
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/^### (.+)$/gm, '<h3>$1</h3>')
+      .replace(/^## (.+)$/gm, '<h2>$1</h2>')
+      .replace(/^# (.+)$/gm, '<h1>$1</h1>')
+      .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+      .replace(/^[-*] (.+)$/gm, '<li>$1</li>')
+      .replace(/\n\n/g, '</p><p>')
+      .replace(/\n/g, '<br>');
+    document.getElementById('doc-viewer-body').innerHTML = `<p>${html}</p>`;
+  } catch (e) {
+    document.getElementById('doc-viewer-body').innerHTML = `<div class="doc-viewer-loading">Failed to load: ${e.message}</div>`;
+  }
+}
+
+function closeDocViewer() {
+  document.getElementById('doc-viewer').classList.remove('visible');
+}
 
 // ── Path Highlighting ───────────────────────────────
 

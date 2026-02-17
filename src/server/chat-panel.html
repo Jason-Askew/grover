@@ -97,9 +97,10 @@
   .chat-msg.assistant .sources div {
     padding: 1px 0;
     cursor: pointer;
+    color: #e67e22;
     transition: color 0.12s;
   }
-  .chat-msg.assistant .sources div:hover { color: #2a5a9a; }
+  .chat-msg.assistant .sources div:hover { color: #d35400; }
 
   .chat-msg.system {
     background: transparent;
@@ -316,7 +317,7 @@ function addMessage(role, text, extraHtml = '') {
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
     .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-    .replace(/\[Source (\d+)\]/g, '<strong style="color:#2a5a9a">[Source $1]</strong>')
+    .replace(/\[Source (\d+)\]/g, '<strong style="color:#e67e22">[Source $1]</strong>')
     .replace(/\n/g, '<br>');
   div.innerHTML = html + extraHtml;
   chatMessages.appendChild(div);

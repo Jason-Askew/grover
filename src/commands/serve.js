@@ -202,6 +202,33 @@ async function serve(port = 3000, indexName = null) {
       return;
     }
 
+    if (req.method === 'GET' && req.url.startsWith('/api/document?')) {
+      const params = new URL(req.url, 'http://localhost').searchParams;
+      const file = params.get('file');
+      if (!file) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Missing file parameter' }));
+        return;
+      }
+      const chunks = currentIndex.records.filter(r => r.file === file);
+      if (chunks.length === 0) {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Document not found' }));
+        return;
+      }
+      chunks.sort((a, b) => a.chunk - b.chunk);
+      const text = chunks.map(c => c.text).join('\n\n');
+      const meta = {
+        file,
+        url: chunks[0].url || '',
+        title: chunks[0].title || file,
+        chunks: chunks.length,
+      };
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ meta, text }));
+      return;
+    }
+
     if (req.method === 'POST' && req.url === '/api/forget') {
       currentMemory.history = [];
       currentMemory.memories = [];
