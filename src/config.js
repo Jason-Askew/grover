@@ -11,6 +11,9 @@ const MEMORY_FILE = path.join(INDEX_DIR, 'memory.json');
 const LLM_API_KEY = process.env.OPENAI_API_KEY || '';
 const LLM_BASE_URL = process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1';
 const LLM_MODEL = process.env.LLM_MODEL || 'gpt-4o-mini';
+const POLLY_REGION = process.env.AWS_REGION || 'ap-southeast-2';
+const POLLY_VOICE = process.env.POLLY_VOICE || 'Olivia';
+const POLLY_ENGINE = process.env.POLLY_ENGINE || 'neural';
 
 function resolveIndex(name) {
   const indexDir = path.join('./index', name);
@@ -51,6 +54,6 @@ function listIndexes() {
 
 module.exports = {
   DOCS_DIR, INDEX_DIR, META_FILE, EMBEDDINGS_FILE, GRAPH_FILE, MEMORY_FILE,
-  LLM_API_KEY, LLM_BASE_URL, LLM_MODEL,
+  LLM_API_KEY, LLM_BASE_URL, LLM_MODEL, POLLY_REGION, POLLY_VOICE, POLLY_ENGINE,
   resolveIndex, listIndexes,
 };

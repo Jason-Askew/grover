@@ -163,6 +163,53 @@
   .typing-indicator span:nth-child(3) { animation-delay: 0.4s; }
   @keyframes blink { 0%,60%,100% { opacity: 0.2; } 30% { opacity: 1; } }
 
+  .mic-btn {
+    padding: 10px 12px;
+    border-radius: 8px;
+    border: 1px solid #ddd;
+    background: #fff;
+    color: #888;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.15s;
+    flex-shrink: 0;
+  }
+  .mic-btn svg { width: 16px; height: 16px; }
+  .mic-btn:hover { color: #333; border-color: #999; }
+  .mic-btn.recording {
+    background: #e74c3c;
+    border-color: #c0392b;
+    color: #fff;
+    animation: pulse 1.5s ease-in-out infinite;
+  }
+  .mic-btn.processing {
+    background: #f39c12;
+    border-color: #e67e22;
+    color: #fff;
+    opacity: 0.7;
+    cursor: wait;
+  }
+  @keyframes pulse {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(231,76,60,0.4); }
+    50% { box-shadow: 0 0 0 8px rgba(231,76,60,0); }
+  }
+
+  .speaker-btn {
+    background: none; border: none;
+    color: #888; cursor: pointer;
+    padding: 4px 8px;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    transition: all 0.15s;
+    display: flex;
+    align-items: center;
+  }
+  .speaker-btn svg { width: 14px; height: 14px; }
+  .speaker-btn:hover { color: #333; border-color: #999; }
+  .speaker-btn.active { color: #2a5a9a; border-color: #2a5a9a; }
+
   /* Adjust graph area for chat panel */
   #graph-container { left: 280px; right: 420px; }
   .control-panel { z-index: 50; }
@@ -173,6 +220,7 @@
     <h2>Knowledge</h2>
     <div class="chat-header-controls">
       <select id="index-selector" onchange="switchIndex(this.value)"></select>
+      <button class="speaker-btn" id="speaker-toggle" onclick="toggleTts()" title="Toggle voice output"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><line x1="23" y1="9" x2="17" y2="15" class="speaker-off"/><line x1="17" y1="9" x2="23" y2="15" class="speaker-off"/></svg></button>
       <button onclick="clearChat()">Clear</button>
     </div>
   </div>
@@ -184,6 +232,7 @@
   </div>
   <div class="chat-input-area">
     <input type="text" id="chat-input" placeholder="Ask a question..." />
+    <button class="mic-btn" id="mic-btn" onclick="toggleMic()" title="Voice input"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg></button>
     <button id="chat-send" onclick="sendMessage()">Ask</button>
   </div>
 </div>
@@ -294,14 +343,7 @@ async function sendMessage() {
     let buffer = '';
     let eventType = '';
 
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split('\n');
-      buffer = lines.pop() || '';
-
+    function processSSELines(lines) {
       for (const line of lines) {
         if (line.startsWith('event: ')) {
           eventType = line.slice(7).trim();
@@ -315,6 +357,7 @@ async function sendMessage() {
               fullAnswer += parsed;
               msgDiv.innerHTML = formatAnswer(fullAnswer);
               chatMessages.scrollTop = chatMessages.scrollHeight;
+              onStreamToken(parsed);
             } else if (eventType === 'done') {
               vizPath = parsed.path;
             } else if (eventType === 'error') {
@@ -324,6 +367,21 @@ async function sendMessage() {
           eventType = '';
         }
       }
+    }
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || '';
+      processSSELines(lines);
+    }
+
+    // Process any remaining data in the buffer
+    if (buffer.trim()) {
+      processSSELines(buffer.split('\n'));
     }
 
     // Final render with sources
@@ -346,6 +404,9 @@ async function sendMessage() {
     if (vizPath && typeof highlightPath === 'function') {
       highlightPath(vizPath);
     }
+
+    // Flush any remaining TTS text
+    flushTtsBuffer();
 
   } catch (e) {
     typingEl.classList.remove('visible');
@@ -395,6 +456,7 @@ chatMessages.addEventListener('click', function(e) {
 });
 
 function clearChat() {
+  stopAudio();
   chatMessages.innerHTML = '';
   const name = indexSelector.value || 'the knowledge base';
   chatMessages.innerHTML = '<div class="chat-msg system" id="chat-welcome">Ask a question about ' + name + '</div>';
@@ -404,4 +466,154 @@ function clearChat() {
 
 // highlightPath and focusNode are defined in graph-viz.html (vis-network)
 // No need to redefine them here.
+
+// ── Voice: STT (Web Speech API) + TTS (Amazon Polly) ─────
+
+const micBtn = document.getElementById('mic-btn');
+const speakerBtn = document.getElementById('speaker-toggle');
+
+let ttsEnabled = false;
+let currentAudio = null;
+let sttRecognition = null;
+
+const speakerSvgOff = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/></svg>';
+const speakerSvgOn = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/></svg>';
+
+function toggleTts() {
+  ttsEnabled = !ttsEnabled;
+  speakerBtn.classList.toggle('active', ttsEnabled);
+  speakerBtn.innerHTML = ttsEnabled ? speakerSvgOn : speakerSvgOff;
+  if (!ttsEnabled) stopAudio();
+}
+
+function stopAudio() {
+  if (currentAudio) {
+    currentAudio.pause();
+    currentAudio = null;
+  }
+  ttsAudioQueue = [];
+  ttsIsPlaying = false;
+  ttsBuffer = '';
+}
+
+// ── STT: Browser Web Speech API ──────────────────────────
+
+function toggleMic() {
+  if (sttRecognition) {
+    sttRecognition.stop();
+    sttRecognition = null;
+    micBtn.classList.remove('recording');
+    chatInput.placeholder = 'Ask a question...';
+    return;
+  }
+
+  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SpeechRecognition) {
+    addMessage('system', 'Voice input not available in this browser');
+    return;
+  }
+
+  stopAudio();
+  sttRecognition = new SpeechRecognition();
+  sttRecognition.lang = 'en-AU';
+  sttRecognition.interimResults = true;
+  sttRecognition.maxAlternatives = 1;
+
+  micBtn.classList.add('recording');
+  chatInput.placeholder = 'Listening...';
+
+  sttRecognition.onresult = (event) => {
+    let transcript = '';
+    for (let i = 0; i < event.results.length; i++) {
+      transcript += event.results[i][0].transcript;
+    }
+    chatInput.value = transcript;
+    if (event.results[event.results.length - 1].isFinal) {
+      micBtn.classList.remove('recording');
+      chatInput.placeholder = 'Ask a question...';
+      sttRecognition = null;
+      if (chatInput.value.trim()) sendMessage();
+    }
+  };
+
+  sttRecognition.onerror = () => {
+    micBtn.classList.remove('recording');
+    chatInput.placeholder = 'Ask a question...';
+    sttRecognition = null;
+    addMessage('system', 'Voice recognition failed');
+  };
+
+  sttRecognition.onend = () => {
+    micBtn.classList.remove('recording');
+    chatInput.placeholder = 'Ask a question...';
+    sttRecognition = null;
+  };
+
+  sttRecognition.start();
+}
+
+// ── TTS: Amazon Polly (sentence-by-sentence streaming) ───
+
+let ttsBuffer = '';
+let ttsAudioQueue = [];
+let ttsIsPlaying = false;
+let lastSpokenText = '';
+
+function cleanTtsText(t) {
+  return t.replace(/\[Source \d+\]/g, '').replace(/\*\*(.+?)\*\*/g, '$1').trim();
+}
+
+function onStreamToken(token) {
+  if (!ttsEnabled) return;
+  ttsBuffer += token;
+  let match;
+  while ((match = ttsBuffer.match(/^([\s\S]*?[.!?])\s/))) {
+    const sentence = cleanTtsText(match[1]);
+    ttsBuffer = ttsBuffer.slice(match[0].length);
+    if (sentence) enqueueTts(sentence);
+  }
+}
+
+function flushTtsBuffer() {
+  if (!ttsEnabled) return;
+  const remaining = cleanTtsText(ttsBuffer);
+  ttsBuffer = '';
+  if (remaining) enqueueTts(remaining);
+}
+
+async function enqueueTts(text) {
+  try {
+    const resp = await fetch('/api/tts', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text }),
+    });
+    const data = await resp.json();
+    if (data.audioContent) {
+      const audioSrc = 'data:audio/mp3;base64,' + data.audioContent;
+      ttsAudioQueue.push(audioSrc);
+      playNextTts();
+    }
+  } catch (e) {
+    // Silent fail on TTS errors
+  }
+}
+
+function playNextTts() {
+  if (ttsIsPlaying || ttsAudioQueue.length === 0) return;
+  ttsIsPlaying = true;
+  const src = ttsAudioQueue.shift();
+  currentAudio = new Audio(src);
+  currentAudio.onended = () => {
+    currentAudio = null;
+    ttsIsPlaying = false;
+    playNextTts();
+  };
+  currentAudio.onerror = () => {
+    currentAudio = null;
+    ttsIsPlaying = false;
+    playNextTts();
+  };
+  currentAudio.play();
+}
 </script>
