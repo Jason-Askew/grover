@@ -265,40 +265,88 @@ async function sendMessage() {
   chatMessages.scrollTop = chatMessages.scrollHeight;
 
   try {
-    const resp = await fetch('/api/ask', {
+    const resp = await fetch('/api/ask-stream', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ query }),
     });
 
-    const data = await resp.json();
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({ error: resp.statusText }));
+      typingEl.classList.remove('visible');
+      addMessage('system', 'Error: ' + (err.error || resp.statusText));
+      chatSend.disabled = false;
+      return;
+    }
 
+    // Create the assistant message div for streaming into
+    const msgDiv = document.createElement('div');
+    msgDiv.className = 'chat-msg assistant';
+    chatMessages.appendChild(msgDiv);
     typingEl.classList.remove('visible');
 
-    if (data.error) {
-      addMessage('system', 'Error: ' + data.error);
-    } else {
-      // Add answer with sources
-      let sourcesHtml = '';
-      if (data.sources && data.sources.length > 0) {
-        sourcesHtml = '<div class="sources">' +
-          data.sources.map(s => {
-            const pg = s.pageStart === s.pageEnd ? 'p.' + s.pageStart : 'pp.' + s.pageStart + '-' + s.pageEnd;
-            const label = s.file.replace(/\.md$/, '').split('/').pop();
-            if (s.url) {
-              return '<div data-doc="doc:' + s.file.replace(/"/g, '&quot;') + '" data-url="' + s.url.replace(/"/g, '&quot;') + '">[' + s.index + '] ' + label + ' (' + pg + ') ↗</div>';
-            }
-            return '<div data-doc="doc:' + s.file.replace(/"/g, '&quot;') + '">[' + s.index + '] ' + label + ' (' + pg + ')</div>';
-          }).join('') +
-          '</div>';
-      }
-      addMessage('assistant', data.answer, sourcesHtml);
+    let fullAnswer = '';
+    let sources = [];
+    let vizPath = null;
 
-      // Highlight graph path
-      if (data.path) {
-        highlightPath(data.path);
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let eventType = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || '';
+
+      for (const line of lines) {
+        if (line.startsWith('event: ')) {
+          eventType = line.slice(7).trim();
+        } else if (line.startsWith('data: ')) {
+          const data = line.slice(6);
+          try {
+            const parsed = JSON.parse(data);
+            if (eventType === 'sources') {
+              sources = parsed;
+            } else if (eventType === 'token') {
+              fullAnswer += parsed;
+              msgDiv.innerHTML = formatAnswer(fullAnswer);
+              chatMessages.scrollTop = chatMessages.scrollHeight;
+            } else if (eventType === 'done') {
+              vizPath = parsed.path;
+            } else if (eventType === 'error') {
+              addMessage('system', 'Error: ' + parsed.error);
+            }
+          } catch (e) { /* skip malformed */ }
+          eventType = '';
+        }
       }
     }
+
+    // Final render with sources
+    let sourcesHtml = '';
+    if (sources.length > 0) {
+      sourcesHtml = '<div class="sources">' +
+        sources.map(s => {
+          const pg = s.pageStart === s.pageEnd ? 'p.' + s.pageStart : 'pp.' + s.pageStart + '-' + s.pageEnd;
+          const label = s.file.replace(/\.md$/, '').split('/').pop();
+          if (s.url) {
+            return '<div data-doc="doc:' + s.file.replace(/"/g, '&quot;') + '" data-url="' + s.url.replace(/"/g, '&quot;') + '">[' + s.index + '] ' + label + ' (' + pg + ') ↗</div>';
+          }
+          return '<div data-doc="doc:' + s.file.replace(/"/g, '&quot;') + '">[' + s.index + '] ' + label + ' (' + pg + ')</div>';
+        }).join('') +
+        '</div>';
+    }
+    msgDiv.innerHTML = formatAnswer(fullAnswer) + sourcesHtml;
+
+    // Highlight graph path
+    if (vizPath && typeof highlightPath === 'function') {
+      highlightPath(vizPath);
+    }
+
   } catch (e) {
     typingEl.classList.remove('visible');
     addMessage('system', 'Connection error: ' + e.message);
@@ -306,6 +354,16 @@ async function sendMessage() {
 
   chatSend.disabled = false;
   chatMessages.scrollTop = chatMessages.scrollHeight;
+}
+
+function formatAnswer(text) {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+    .replace(/\[Source (\d+)\]/g, '<strong style="color:#e67e22">[Source $1]</strong>')
+    .replace(/\n/g, '<br>');
 }
 
 function addMessage(role, text, extraHtml = '') {
