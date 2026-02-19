@@ -6,7 +6,7 @@ const { ReasoningBank, SonaCoordinator } = require('@ruvector/ruvllm');
 const { LLM_MODEL, LLM_BASE_URL, resolveIndex, listIndexes } = require('../config');
 const { loadIndex } = require('../persistence/index-persistence');
 const { retrieve } = require('../retrieval/retrieve');
-const { ragAnswer } = require('../llm/rag');
+const { ragAnswer, ragAnswerStream } = require('../llm/rag');
 const { ConversationMemory } = require('../memory/conversation-memory');
 const { buildVizData } = require('../server/viz-builder');
 
@@ -198,6 +198,93 @@ async function serve(port = 3000, indexName = null) {
         console.error('[ask error]', e.message);
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: e.message }));
+      }
+      return;
+    }
+
+    if (req.method === 'POST' && req.url === '/api/ask-stream') {
+      const body = await readBody(req);
+      try {
+        const { query } = JSON.parse(body);
+        if (!query) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Missing query' }));
+          return;
+        }
+
+        console.log(`[ask-stream][${currentName}] ${query}`);
+
+        const { results, path: graphPath, mode } = await retrieve(query, currentIndex, { k: 8, graphMode: true, memory: currentMemory });
+
+        // Send SSE headers
+        res.writeHead(200, {
+          'Content-Type': 'text/event-stream',
+          'Cache-Control': 'no-cache',
+          'Connection': 'keep-alive',
+        });
+
+        // Send sources first
+        const sources = results.map((r, i) => ({
+          index: i + 1,
+          file: r.file,
+          url: r.url || '',
+          pageStart: r.pageStart,
+          pageEnd: r.pageEnd,
+          score: (r.combinedScore ?? r.score ?? r.vectorScore ?? 0),
+        }));
+        res.write(`event: sources\ndata: ${JSON.stringify(sources)}\n\n`);
+
+        // Stream answer tokens
+        const { answer } = await ragAnswerStream(query, results, currentMemory, (token) => {
+          res.write(`event: token\ndata: ${JSON.stringify(token)}\n\n`);
+        });
+
+        // Build viz path from cited sources
+        const citedFiles = new Set(sources.map(s => s.file));
+        const citedDocIds = new Set([...citedFiles].map(f => `doc:${f}`));
+        let vizPath = null;
+        if (currentIndex.graph && citedDocIds.size > 0) {
+          const pathNodes = new Set();
+          const pathEdges = [];
+          for (const docId of citedDocIds) {
+            if (!currentIndex.graph.nodes.has(docId)) continue;
+            pathNodes.add(docId);
+            const edges = currentIndex.graph.edges.get(docId) || [];
+            for (const edge of edges) {
+              const targetNode = currentIndex.graph.nodes.get(edge.target);
+              if (!targetNode) continue;
+              if (['brand', 'category', 'product', 'concept'].includes(targetNode.type)) {
+                pathNodes.add(edge.target);
+                pathEdges.push({ source: docId, target: edge.target, type: edge.type });
+              }
+              if (targetNode.type === 'document' && citedDocIds.has(edge.target)) {
+                pathEdges.push({ source: docId, target: edge.target, type: edge.type });
+              }
+            }
+          }
+          const edgeSet = new Set();
+          const uniqueEdges = pathEdges.filter(e => {
+            const k = `${e.source}|${e.target}|${e.type}`;
+            if (edgeSet.has(k)) return false;
+            edgeSet.add(k);
+            return true;
+          });
+          vizPath = { nodes: [...pathNodes], edges: uniqueEdges };
+        }
+
+        // Send done event with path
+        res.write(`event: done\ndata: ${JSON.stringify({ path: vizPath, mode })}\n\n`);
+        res.end();
+
+      } catch (e) {
+        console.error('[ask-stream error]', e.message);
+        if (!res.headersSent) {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: e.message }));
+        } else {
+          res.write(`event: error\ndata: ${JSON.stringify({ error: e.message })}\n\n`);
+          res.end();
+        }
       }
       return;
     }

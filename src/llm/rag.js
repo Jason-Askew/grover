@@ -1,6 +1,6 @@
 const rv = require('ruvector');
 const { formatContext } = require('../utils/formatting');
-const { callLLM } = require('./client');
+const { callLLM, callLLMStream } = require('./client');
 
 const RAG_SYSTEM_PROMPT = `You are a knowledgeable financial document assistant. You answer questions based on the provided source documents and conversation history.
 
@@ -104,4 +104,53 @@ async function ragAnswer(query, results, memory = null, { stream = true } = {}) 
   return { answer, sources };
 }
 
-module.exports = { RAG_SYSTEM_PROMPT, ragAnswer };
+async function ragAnswerStream(query, results, memory, onToken) {
+  const context = formatContext(results);
+
+  let memoryContext = '';
+  let historyMessages = [];
+  let queryEmb = null;
+
+  if (memory) {
+    const queryResult = await rv.embed(query);
+    queryEmb = new Float32Array(queryResult.embedding);
+    const pastInteractions = await memory.findRelevant(queryEmb, 3);
+
+    if (pastInteractions.length > 0) {
+      memoryContext = '\n\nRelevant past interactions:\n' +
+        pastInteractions.map((m, i) =>
+          `[Past Q${i + 1}]: ${m.query}\n[Past A${i + 1}]: ${m.answer}`
+        ).join('\n\n');
+    }
+
+    const recent = memory.getRecentHistory(6);
+    if (recent.length > 0) {
+      historyMessages = recent.map(h => ({ role: h.role, content: h.content }));
+    }
+  }
+
+  const messages = [
+    { role: 'system', content: RAG_SYSTEM_PROMPT },
+    ...historyMessages,
+    { role: 'user', content: `Sources:\n\n${context}${memoryContext}\n\n---\n\nQuestion: ${query}` },
+  ];
+
+  const answer = await callLLMStream(messages, onToken);
+
+  if (memory && queryEmb) {
+    await memory.store(query, answer, results, queryEmb);
+  }
+
+  const sources = results.map((r, i) => ({
+    index: i + 1,
+    file: r.file,
+    url: r.url || '',
+    pageStart: r.pageStart,
+    pageEnd: r.pageEnd,
+    score: (r.combinedScore ?? r.score ?? r.vectorScore ?? 0),
+  }));
+
+  return { answer, sources };
+}
+
+module.exports = { RAG_SYSTEM_PROMPT, ragAnswer, ragAnswerStream };
