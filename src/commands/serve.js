@@ -3,7 +3,8 @@ const fs = require('fs');
 const path = require('path');
 const http = require('http');
 const { ReasoningBank, SonaCoordinator } = require('@ruvector/ruvllm');
-const { LLM_MODEL, LLM_BASE_URL, resolveIndex, listIndexes } = require('../config');
+const { PollyClient, SynthesizeSpeechCommand } = require('@aws-sdk/client-polly');
+const { LLM_MODEL, LLM_BASE_URL, POLLY_REGION, POLLY_VOICE, POLLY_ENGINE, resolveIndex, listIndexes } = require('../config');
 const { loadIndex } = require('../persistence/index-persistence');
 const { retrieve } = require('../retrieval/retrieve');
 const { ragAnswer, ragAnswerStream } = require('../llm/rag');
@@ -56,6 +57,8 @@ async function serve(port = 3000, indexName = null) {
       req.on('error', reject);
     });
   }
+
+  const polly = new PollyClient({ region: POLLY_REGION });
 
   const server = http.createServer(async (req, res) => {
     res.setHeader('Access-Control-Allow-Origin', '*');
@@ -313,6 +316,43 @@ async function serve(port = 3000, indexName = null) {
       };
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ meta, text }));
+      return;
+    }
+
+    if (req.method === 'POST' && req.url === '/api/tts') {
+      const body = await readBody(req);
+      try {
+        const { text } = JSON.parse(body);
+        if (!text) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Missing text' }));
+          return;
+        }
+
+        const cmd = new SynthesizeSpeechCommand({
+          Text: text,
+          OutputFormat: 'mp3',
+          VoiceId: POLLY_VOICE,
+          Engine: POLLY_ENGINE,
+          LanguageCode: 'en-AU',
+        });
+        const result = await polly.send(cmd);
+
+        // Read the stream into a buffer
+        const chunks = [];
+        for await (const chunk of result.AudioStream) {
+          chunks.push(chunk);
+        }
+        const audioBuffer = Buffer.concat(chunks);
+        const audioBase64 = audioBuffer.toString('base64');
+
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ audioContent: audioBase64 }));
+      } catch (e) {
+        console.error('[tts error]', e.message);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: e.message, fallback: true }));
+      }
       return;
     }
 
