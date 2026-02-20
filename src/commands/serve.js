@@ -356,6 +356,20 @@ async function serve(port = 3000, indexName = null) {
       return;
     }
 
+    if (req.method === 'GET' && req.url === '/api/memory') {
+      const memories = (currentMemory.memories || []).map(m => ({
+        id: m.id,
+        query: m.query,
+        answer: m.answer,
+        sources: m.sources,
+        timestamp: m.timestamp,
+        quality: m.quality,
+      }));
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ memories }));
+      return;
+    }
+
     if (req.method === 'POST' && req.url === '/api/forget') {
       currentMemory.history = [];
       currentMemory.memories = [];

@@ -27,7 +27,20 @@
     flex-direction: column;
     z-index: 50;
     overflow: hidden;
+    transition: width 0.25s ease;
   }
+  .control-panel.collapsed {
+    width: 40px;
+  }
+  .control-panel.collapsed .cp-body,
+  .control-panel.collapsed .cp-header span {
+    display: none;
+  }
+  .cp-collapse-btn {
+    background: none; border: none; cursor: pointer; padding: 4px;
+    color: #666; font-size: 16px; line-height: 1; flex-shrink: 0;
+  }
+  .cp-collapse-btn:hover { color: #333; }
   .cp-header {
     padding: 14px 16px;
     border-bottom: 1px solid #e8e8e8;
@@ -38,6 +51,11 @@
     align-items: center;
     justify-content: space-between;
     flex-shrink: 0;
+  }
+  .control-panel.collapsed .cp-header {
+    justify-content: center;
+    padding: 14px 8px;
+    border-bottom: none;
   }
   .cp-header .cp-stats { font-weight: 400; font-size: 11px; color: #999; }
   .cp-body {
@@ -189,36 +207,6 @@
   }
   #graph-container > div { width: 100%; height: 100%; }
 
-  /* Click tooltip (non-document nodes) */
-  .node-tooltip {
-    position: absolute;
-    z-index: 100;
-    background: linear-gradient(135deg, var(--tt-primary, #555), var(--tt-secondary, #777));
-    color: #fff;
-    padding: 12px 14px;
-    border-radius: 6px;
-    max-width: 380px;
-    font-size: 13px;
-    line-height: 1.5;
-    box-shadow: 0 4px 16px rgba(0,0,0,0.25);
-    display: none;
-    word-break: break-word;
-  }
-  .node-tooltip.visible { display: block; }
-  .node-tooltip .tt-close {
-    position: absolute; top: 4px; right: 6px;
-    background: transparent; border: none;
-    color: rgba(255,255,255,0.7); font-size: 16px; cursor: pointer;
-  }
-  .node-tooltip .tt-close:hover { color: #fff; }
-  .node-tooltip .tt-row { margin-bottom: 3px; }
-  .node-tooltip .tt-row strong { opacity: 0.85; }
-  .node-tooltip .tt-matched {
-    margin-top: 6px; padding-top: 6px;
-    border-top: 1px solid rgba(255,255,255,0.2);
-    font-size: 12px; color: #f0c850;
-  }
-
   /* Document viewer panel */
   .doc-viewer {
     position: fixed;
@@ -296,6 +284,88 @@
     height: 100%; color: #999; font-size: 13px;
   }
 
+  /* ── Memory viewer panel ── */
+  .memory-viewer {
+    position: fixed;
+    top: 0; bottom: 0;
+    left: 280px;
+    width: 480px;
+    z-index: 150;
+    background: #fff;
+    border-right: 1px solid #e0e0e0;
+    display: none;
+    flex-direction: column;
+    box-shadow: 4px 0 20px rgba(0,0,0,0.08);
+  }
+  .memory-viewer.visible { display: flex; }
+  .memory-viewer-header {
+    padding: 14px 16px;
+    border-bottom: 1px solid #e8e8e8;
+    flex-shrink: 0;
+  }
+  .memory-viewer-header h3 {
+    font-family: 'Inter', sans-serif;
+    font-size: 14px; font-weight: 600; color: #333;
+    margin-bottom: 2px; line-height: 1.4;
+  }
+  .memory-viewer-header .memory-count {
+    font-size: 11px; color: #999; font-family: 'Inter', sans-serif;
+  }
+  .memory-viewer-close {
+    position: absolute; top: 10px; right: 12px;
+    background: none; border: 1px solid #ddd;
+    border-radius: 4px; padding: 2px 8px;
+    font-size: 14px; cursor: pointer; color: #888;
+    font-family: 'Inter', sans-serif;
+    transition: all 0.15s;
+  }
+  .memory-viewer-close:hover { color: #333; border-color: #999; }
+  .memory-viewer-body {
+    flex: 1; overflow-y: auto; padding: 12px 16px;
+    font-family: 'Inter', sans-serif;
+  }
+  .memory-viewer-body::-webkit-scrollbar { width: 4px; }
+  .memory-viewer-body::-webkit-scrollbar-thumb { background: #ddd; border-radius: 2px; }
+  .memory-card {
+    border: 1px solid #e8e8e8; border-radius: 6px;
+    padding: 12px; margin-bottom: 10px;
+    background: #fafafa;
+  }
+  .memory-card-time {
+    font-size: 10px; color: #aaa; margin-bottom: 6px;
+  }
+  .memory-card-q {
+    font-size: 12px; font-weight: 600; color: #333; margin-bottom: 4px;
+  }
+  .memory-card-a {
+    font-size: 12px; color: #555; line-height: 1.6; margin-bottom: 6px;
+  }
+  .memory-card-a p { margin-bottom: 6px; }
+  .memory-card-a h1,.memory-card-a h2,.memory-card-a h3 {
+    color: #222; margin: 8px 0 4px; font-weight: 600;
+  }
+  .memory-card-a h1 { font-size: 15px; }
+  .memory-card-a h2 { font-size: 13px; }
+  .memory-card-a h3 { font-size: 12px; }
+  .memory-card-sources {
+    font-size: 10px; color: #999;
+  }
+  .memory-card-sources span {
+    display: inline-block; background: #eee; border-radius: 3px;
+    padding: 1px 5px; margin: 1px 2px;
+  }
+  .cp-memory-btn {
+    background: none; border: 1px solid #ddd; border-radius: 4px;
+    padding: 2px 8px; font-size: 11px; cursor: pointer; color: #666;
+    font-family: 'Inter', sans-serif; transition: all 0.15s;
+    margin-right: 4px;
+  }
+  .cp-memory-btn:hover { color: #333; border-color: #999; }
+  .cp-memory-btn.active {
+    background: #4a8eda; color: #fff; border-color: #3a7bd5;
+  }
+  .cp-memory-btn.active:hover { background: #3a7bd5; }
+
 
   .loading {
     position: fixed; inset: 0; z-index: 500;
@@ -325,6 +395,8 @@
   <div class="cp-header">
     <span>Filters</span>
     <span class="cp-stats" id="cp-stats"></span>
+    <button class="cp-memory-btn" id="cp-memory-btn" onclick="toggleMemoryGraph()" title="Toggle memory graph">Memory</button>
+    <button class="cp-collapse-btn" id="cp-collapse-btn" onclick="toggleFilterPanel()" title="Collapse filters">&#9664;</button>
   </div>
   <div class="cp-body" id="cp-body">
     <!-- populated by JS -->
@@ -334,11 +406,19 @@
 <div id="graph-container">
   <div id="vis-canvas"></div>
 
-  <div class="node-tooltip" id="node-tooltip">
-    <button class="tt-close" onclick="hideTooltip()">×</button>
-    <div id="tt-content"></div>
-  </div>
+  <span id="node-tooltip" style="position:absolute;z-index:100;background:rgba(0,0,0,0.75);color:#fff;padding:2px 6px;border-radius:2px;font-size:10px;line-height:1;display:none;pointer-events:none;white-space:nowrap;font-family:Inter,sans-serif;" role="tooltip"></span>
 
+</div>
+
+<div class="memory-viewer" id="memory-viewer">
+  <button class="memory-viewer-close" onclick="closeMemoryViewer()">×</button>
+  <div class="memory-viewer-header">
+    <h3>Conversation Memory</h3>
+    <div class="memory-count" id="memory-count"></div>
+  </div>
+  <div class="memory-viewer-body" id="memory-viewer-body">
+    <div class="doc-viewer-loading">Loading...</div>
+  </div>
 </div>
 
 <div class="doc-viewer" id="doc-viewer">
@@ -371,6 +451,15 @@ const BRAND_THEMES = {
 };
 const DEFAULT_COLORS = { brand:{bg:'#555',size:60},category:{bg:'#777',size:60},document:{bg:'#999',size:20},product:{bg:'#AAA',size:40},concept:{bg:'#BBB',size:30} };
 const MATCH_COLOR = '#f0c850';
+
+function toggleFilterPanel() {
+  const panel = document.getElementById('control-panel');
+  const btn = document.getElementById('cp-collapse-btn');
+  panel.classList.toggle('collapsed');
+  const collapsed = panel.classList.contains('collapsed');
+  btn.innerHTML = collapsed ? '&#9654;' : '&#9664;';
+  btn.title = collapsed ? 'Expand filters' : 'Collapse filters';
+}
 
 const NODE_TYPE_META = {
   brand:    { label: 'Services',   color: '#e86c5f' },
@@ -879,15 +968,17 @@ function showTooltip(nodeId, x, y) {
   document.documentElement.style.setProperty('--tt-primary', theme?.primary || '#555');
   document.documentElement.style.setProperty('--tt-secondary', theme?.secondary || '#777');
 
-  let html = `<div class="tt-row"><strong>${node.type}:</strong> ${node.label}</div>`;
-  const panel = document.getElementById('node-tooltip');
-  document.getElementById('tt-content').innerHTML = html;
-  panel.style.left = (x + 16) + 'px';
-  panel.style.top = (y + 16) + 'px';
-  panel.classList.add('visible');
+  const tip = document.getElementById('node-tooltip');
+  tip.textContent = node.type + ': ' + node.label;
+  tip.style.left = (x + 10) + 'px';
+  tip.style.top = (y + 10) + 'px';
+  tip.style.display = 'inline';
+  clearTimeout(tooltipTimer);
+  tooltipTimer = setTimeout(hideTooltip, 3000);
 }
 
-function hideTooltip() { document.getElementById('node-tooltip').classList.remove('visible'); }
+let tooltipTimer = null;
+function hideTooltip() { clearTimeout(tooltipTimer); document.getElementById('node-tooltip').style.display = 'none'; }
 
 // ── Document Viewer ──────────────────────────────────
 
@@ -937,6 +1028,277 @@ async function openDocViewer(nodeId, node) {
 
 function closeDocViewer() {
   document.getElementById('doc-viewer').classList.remove('visible');
+}
+
+// ── Memory Graph + Viewer ────────────────────────────
+
+let memoryGraphActive = false;
+let memoryNetwork = null;
+let cachedMemories = null;
+
+async function toggleMemoryGraph() {
+  const btn = document.getElementById('cp-memory-btn');
+  if (memoryGraphActive) {
+    exitMemoryGraph();
+    btn.classList.remove('active');
+    return;
+  }
+  btn.classList.add('active');
+  memoryGraphActive = true;
+
+  // Hide knowledge graph elements, show loading
+  if (network) { network.destroy(); network = null; }
+  closeDocViewer();
+  closeMemoryViewer();
+
+  try {
+    const resp = await fetch('/api/memory');
+    const data = await resp.json();
+    cachedMemories = data.memories || [];
+
+    if (cachedMemories.length === 0) {
+      document.getElementById('vis-canvas').innerHTML =
+        '<div style="display:flex;align-items:center;justify-content:center;height:100%;color:#999;font-size:14px;font-family:Inter,sans-serif;">No conversation memory yet</div>';
+      return;
+    }
+
+    buildMemoryNetwork(cachedMemories);
+  } catch (e) {
+    document.getElementById('vis-canvas').innerHTML =
+      '<div style="display:flex;align-items:center;justify-content:center;height:100%;color:#999;font-size:14px;font-family:Inter,sans-serif;">Failed to load memory: ' + e.message + '</div>';
+  }
+}
+
+function exitMemoryGraph() {
+  memoryGraphActive = false;
+  if (memoryNetwork) { memoryNetwork.destroy(); memoryNetwork = null; }
+  closeMemoryViewer();
+  // Rebuild the knowledge graph
+  document.getElementById('vis-canvas').innerHTML = '';
+  buildNetwork(graphData);
+  applyFilters();
+}
+
+function buildMemoryNetwork(memories) {
+  const nodes = [];
+  const edges = [];
+  const sourceMap = {}; // file -> node id
+
+  // Sort chronologically
+  memories.sort((a, b) => new Date(a.timestamp || 0) - new Date(b.timestamp || 0));
+
+  // Create memory nodes
+  memories.forEach((m, i) => {
+    const truncQ = (m.query || '').length > 50 ? (m.query || '').slice(0, 47) + '...' : (m.query || '');
+    nodes.push({
+      id: m.id,
+      label: truncQ,
+      shape: 'dot',
+      size: 30,
+      color: { background: '#f0a030', border: '#d48820', highlight: { background: '#ffc060', border: '#fff' }, hover: { background: '#f0a030', border: '#333' } },
+      font: { size: 12, color: '#333', face: 'Inter, sans-serif', multi: 'html' },
+      borderWidth: 2,
+      shadow: { enabled: true, color: 'rgba(240,160,48,0.3)', size: 8, x: 0, y: 0 },
+      memoryData: m,
+      nodeType: 'memory',
+    });
+
+    // Chronological edge to previous memory
+    if (i > 0) {
+      edges.push({
+        id: 'follows-' + i,
+        from: memories[i - 1].id,
+        to: m.id,
+        label: 'follows',
+        color: { color: '#ccc' },
+        width: 1.5,
+        dashes: [6, 4],
+        arrows: { to: { enabled: true, scaleFactor: 0.5 } },
+        font: { size: 9, color: '#bbb', strokeWidth: 2, strokeColor: '#fff', face: 'Inter, sans-serif' },
+        smooth: { type: 'curvedCW', roundness: 0.1 },
+        edgeType: 'follows',
+      });
+    }
+
+    // Source nodes + citation edges
+    const srcFiles = new Set();
+    (m.sources || []).forEach(s => {
+      const file = typeof s === 'string' ? s : (s.file || '');
+      if (!file || srcFiles.has(file)) return;
+      srcFiles.add(file);
+
+      if (!sourceMap[file]) {
+        const shortName = file.split('/').pop().replace(/\.(pdf|md)$/i, '');
+        const srcId = 'src:' + file;
+        sourceMap[file] = srcId;
+        nodes.push({
+          id: srcId,
+          label: shortName,
+          shape: 'dot',
+          size: 14,
+          color: { background: '#4a8eda', border: '#3a7bd5', highlight: { background: '#6ab0ff', border: '#fff' }, hover: { background: '#4a8eda', border: '#333' } },
+          font: { size: 10, color: '#666', face: 'Inter, sans-serif' },
+          borderWidth: 1,
+          nodeType: 'source',
+        });
+      }
+
+      edges.push({
+        id: 'cites-' + m.id + '-' + file,
+        from: m.id,
+        to: sourceMap[file],
+        label: 'cites',
+        color: { color: '#e8a84c' },
+        width: 0.8,
+        font: { size: 8, color: '#ccc', strokeWidth: 2, strokeColor: '#fff', face: 'Inter, sans-serif' },
+        smooth: { type: 'continuous' },
+        arrows: { to: { enabled: true, scaleFactor: 0.4 } },
+        edgeType: 'cites',
+      });
+    });
+  });
+
+  // Related edges — memories sharing sources
+  for (let i = 0; i < memories.length; i++) {
+    const srcA = new Set((memories[i].sources || []).map(s => typeof s === 'string' ? s : (s.file || '')).filter(Boolean));
+    for (let j = i + 1; j < memories.length; j++) {
+      const srcB = new Set((memories[j].sources || []).map(s => typeof s === 'string' ? s : (s.file || '')).filter(Boolean));
+      const shared = [...srcA].filter(f => srcB.has(f));
+      if (shared.length > 0) {
+        edges.push({
+          id: 'related-' + i + '-' + j,
+          from: memories[i].id,
+          to: memories[j].id,
+          label: shared.length + ' shared',
+          color: { color: '#b07de8' },
+          width: Math.min(shared.length, 4),
+          font: { size: 8, color: '#b07de8', strokeWidth: 2, strokeColor: '#fff', face: 'Inter, sans-serif' },
+          smooth: { type: 'curvedCCW', roundness: 0.2 },
+          dashes: false,
+          edgeType: 'related',
+        });
+      }
+    }
+  }
+
+  document.getElementById('vis-canvas').innerHTML = '';
+  const visMemNodes = new vis.DataSet(nodes);
+  const visMemEdges = new vis.DataSet(edges);
+
+  memoryNetwork = new vis.Network(document.getElementById('vis-canvas'),
+    { nodes: visMemNodes, edges: visMemEdges },
+    {
+      nodes: { shape: 'dot', font: { size: 12 }, borderWidth: 2 },
+      edges: { width: 0.8, smooth: { type: 'continuous' },
+        font: { size: 9, color: '#999', strokeWidth: 2, strokeColor: '#F3F4F6', face: 'Inter, sans-serif', align: 'middle', background: 'rgba(243,244,246,0.85)' },
+      },
+      physics: {
+        stabilization: { iterations: 150 },
+        barnesHut: { gravitationalConstant: -8000, centralGravity: 0.2, springLength: 180, springConstant: 0.02, damping: 0.4 },
+      },
+      interaction: { hover: true },
+    }
+  );
+
+  // Click memory node → open detail panel
+  memoryNetwork.on('click', params => {
+    if (params.nodes.length > 0) {
+      const nodeId = params.nodes[0];
+      const node = visMemNodes.get(nodeId);
+      if (node?.nodeType === 'memory' && node.memoryData) {
+        openMemoryDetail(node.memoryData);
+      } else if (node?.nodeType === 'source') {
+        // Show source name tooltip
+        const tip = document.getElementById('node-tooltip');
+        tip.textContent = 'Source: ' + node.label;
+        tip.style.left = (params.pointer.DOM.x + 10) + 'px';
+        tip.style.top = (params.pointer.DOM.y + 10) + 'px';
+        tip.style.display = 'inline';
+        clearTimeout(tooltipTimer);
+        tooltipTimer = setTimeout(hideTooltip, 3000);
+      }
+    } else {
+      hideTooltip();
+      closeMemoryViewer();
+    }
+  });
+
+  // Update stats
+  document.getElementById('cp-stats').textContent = nodes.length + 'n · ' + edges.length + 'e';
+}
+
+function openMemoryDetail(m) {
+  const viewer = document.getElementById('memory-viewer');
+  const body = document.getElementById('memory-viewer-body');
+  document.getElementById('memory-count').textContent = new Date(m.timestamp).toLocaleString();
+
+  const answer = (m.answer || '')
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/^### (.+)$/gm, '<h3>$1</h3>')
+    .replace(/^## (.+)$/gm, '<h2>$1</h2>')
+    .replace(/^# (.+)$/gm, '<h1>$1</h1>')
+    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+    .replace(/^[-*] (.+)$/gm, '<li>$1</li>')
+    .replace(/\n\n/g, '</p><p>')
+    .replace(/\n/g, '<br>');
+  const sources = (m.sources || []).map(s => {
+    const label = typeof s === 'string' ? s : (s.file || s.title || 'source');
+    return '<span>' + label.replace(/&/g,'&amp;').replace(/</g,'&lt;') + '</span>';
+  }).join(' ');
+
+  body.innerHTML = '<div class="memory-card">'
+    + '<div class="memory-card-q">Q: ' + (m.query||'').replace(/&/g,'&amp;').replace(/</g,'&lt;') + '</div>'
+    + '<div class="memory-card-a"><p>' + answer + '</p></div>'
+    + (sources ? '<div class="memory-card-sources">Sources: ' + sources + '</div>' : '')
+    + '</div>';
+
+  viewer.classList.add('visible');
+}
+
+async function openMemoryViewer() {
+  const viewer = document.getElementById('memory-viewer');
+  const body = document.getElementById('memory-viewer-body');
+  body.innerHTML = '<div class="doc-viewer-loading">Loading...</div>';
+  viewer.classList.add('visible');
+
+  try {
+    const memories = cachedMemories || (await (await fetch('/api/memory')).json()).memories || [];
+    document.getElementById('memory-count').textContent = memories.length + ' interaction' + (memories.length !== 1 ? 's' : '');
+
+    if (memories.length === 0) {
+      body.innerHTML = '<div class="doc-viewer-loading">No conversation memory yet</div>';
+      return;
+    }
+
+    body.innerHTML = memories.map(m => {
+      const time = m.timestamp ? new Date(m.timestamp).toLocaleString() : '';
+      const answer = (m.answer || '')
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/^### (.+)$/gm, '<h3>$1</h3>')
+        .replace(/^## (.+)$/gm, '<h2>$1</h2>')
+        .replace(/^# (.+)$/gm, '<h1>$1</h1>')
+        .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+        .replace(/^[-*] (.+)$/gm, '<li>$1</li>')
+        .replace(/\n\n/g, '</p><p>')
+        .replace(/\n/g, '<br>');
+      const sources = (m.sources || []).map(s => {
+        const label = typeof s === 'string' ? s : (s.file || s.title || 'source');
+        return '<span>' + label.replace(/&/g,'&amp;').replace(/</g,'&lt;') + '</span>';
+      }).join(' ');
+      return '<div class="memory-card">'
+        + (time ? '<div class="memory-card-time">' + time + '</div>' : '')
+        + '<div class="memory-card-q">Q: ' + (m.query||'').replace(/&/g,'&amp;').replace(/</g,'&lt;') + '</div>'
+        + '<div class="memory-card-a"><p>' + answer + '</p></div>'
+        + (sources ? '<div class="memory-card-sources">Sources: ' + sources + '</div>' : '')
+        + '</div>';
+    }).join('');
+  } catch (e) {
+    body.innerHTML = '<div class="doc-viewer-loading">Failed to load: ' + e.message + '</div>';
+  }
+}
+
+function closeMemoryViewer() {
+  document.getElementById('memory-viewer').classList.remove('visible');
 }
 
 // ── Path Highlighting ───────────────────────────────
