@@ -66,4 +66,10 @@ function loadIndex(paths = null) {
   return { dim, records, graph };
 }
 
-module.exports = { saveIndex, loadIndex };
+function loadIndexWithFallback(paths, indexName) {
+  let index = loadIndex(paths);
+  if (!index && indexName === 'Westpac') index = loadIndex();
+  return index;
+}
+
+module.exports = { saveIndex, loadIndex, loadIndexWithFallback };

@@ -2,7 +2,7 @@ const rv = require('ruvector');
 const readline = require('readline');
 const { ReasoningBank, SonaCoordinator } = require('@ruvector/ruvllm');
 const { LLM_API_KEY, LLM_MODEL, LLM_BASE_URL, resolveIndex } = require('../config');
-const { loadIndex } = require('../persistence/index-persistence');
+const { loadIndexWithFallback } = require('../persistence/index-persistence');
 const { retrieve } = require('../retrieval/retrieve');
 const { ragAnswer } = require('../llm/rag');
 const { formatResult } = require('../utils/formatting');
@@ -10,8 +10,7 @@ const { ConversationMemory } = require('../memory/conversation-memory');
 
 async function interactive(indexName = null) {
   const paths = indexName ? resolveIndex(indexName) : null;
-  let index = loadIndex(paths);
-  if (!index && indexName === 'Westpac') index = loadIndex();
+  const index = loadIndexWithFallback(paths, indexName);
   if (!index) { console.log('No index found. Run: node search.js ingest'); return; }
 
   const hasGraph = !!index.graph;
@@ -165,13 +164,13 @@ async function interactive(indexName = null) {
       }
 
       const useMemory = hasLLM && !searchOnly ? memory : null;
-      const { results, mode } = await retrieve(searchQuery, index, { k, graphMode, memory: useMemory });
+      const { results, mode, queryVec } = await retrieve(searchQuery, index, { k, graphMode, memory: useMemory });
 
       if (!hasLLM || searchOnly) {
         console.log(`\n  [${mode}]\n`);
         results.forEach((r, i) => process.stdout.write(formatResult(r, i, hasGraph && graphMode)));
       } else {
-        await ragAnswer(searchQuery, results, memory);
+        await ragAnswer(searchQuery, results, memory, { queryVec, domain: indexName });
       }
 
     } catch (e) {
