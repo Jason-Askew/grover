@@ -17,9 +17,9 @@ async function retrieve(query, index, { k = 5, graphMode = true, memory = null }
 
   if (hasGraph && graphMode) {
     const { results, path } = index.graph.expandResults(parsed, index.records, k);
-    return { results, path, mode: 'vector+graph' };
+    return { results, path, mode: 'vector+graph', queryVec };
   }
-  return { results: parsed.slice(0, k), path: null, mode: 'vector' };
+  return { results: parsed.slice(0, k), path: null, mode: 'vector', queryVec };
 }
 
 module.exports = { retrieve };

@@ -166,6 +166,7 @@ class KnowledgeGraph {
   }
 
   expandResults(vectorResults, allRecords, k = 10) {
+    const recordMap = new Map(allRecords.map(r => [r.id, r]));
     const resultIds = new Set(vectorResults.map(r => r.id));
     const scored = new Map();
 
@@ -241,7 +242,7 @@ class KnowledgeGraph {
             existing.sources.push(neighbor.type);
           }
         } else {
-          const record = allRecords.find(rec => rec.id === neighbor.id);
+          const record = recordMap.get(neighbor.id);
           if (record) {
             scored.set(neighbor.id, {
               id: neighbor.id,

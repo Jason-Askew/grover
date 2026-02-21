@@ -12,7 +12,10 @@ src/
 ├── utils/
 │   ├── math.js                    Shared cosine similarity
 │   ├── pdf.js                     PDF text extraction + page-aware chunking
-│   ├── file-discovery.js          Recursive PDF file finder
+│   ├── markdown.js                Markdown parsing with YAML front-matter
+│   ├── chunking.js                Shared chunk boundary detection
+│   ├── embed-batch.js             Batch embedding child process worker
+│   ├── file-discovery.js          Recursive file finder (PDF + Markdown)
 │   └── formatting.js              Result + context formatters
 ├── graph/
 │   ├── entity-extraction.js       Domain entity + document metadata extraction
@@ -76,8 +79,9 @@ Centralizes all file paths and environment variable reading.
 
 | Export | Type | Description |
 |--------|------|-------------|
-| `DOCS_DIR` | `string` | Source PDF directory (`./corpus`) |
-| `INDEX_DIR` | `string` | Generated index directory (`./index`) |
+| `PROJECT_ROOT` | `string` | Absolute path to project root (resolved from `__dirname`) |
+| `DOCS_DIR` | `string` | Absolute path to source document directory (`<PROJECT_ROOT>/corpus`) |
+| `INDEX_DIR` | `string` | Absolute path to generated index directory (`<PROJECT_ROOT>/index`) |
 | `META_FILE` | `string` | `./index/metadata.json` |
 | `EMBEDDINGS_FILE` | `string` | `./index/embeddings.bin` |
 | `GRAPH_FILE` | `string` | `./index/graph.json` |
@@ -114,13 +118,36 @@ Returns the cosine similarity in the range [-1, 1]. Uses epsilon `1e-8` to avoid
 | `extractPdfText` | `(filePath: string) → { numPages, pages[] }` | Invokes Python/pymupdf via `child_process.execSync`. Returns per-page text. Max buffer: 50MB. |
 | `chunkPages` | `(pages[], maxChars?, overlap?) → chunk[]` | Page-aware text chunking. Default 1000 chars with 200-char overlap. Breaks at paragraph > newline > sentence boundaries. Minimum chunk size: 20 chars. Returns `{ text, pageStart, pageEnd }`. |
 
-### 2.5 `src/utils/file-discovery.js`
+### 2.5 `src/utils/markdown.js`
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `parseMarkdown` | `(filePath: string) → { title, url, source, numPages, pages[] }` | Parses markdown files with optional YAML front-matter (`title`, `url`, `source` fields). Returns the body as a single page. |
+| `chunkText` | `(text: string, maxChars?, overlap?) → chunk[]` | Text chunking for markdown content. Default 1000 chars with 200-char overlap. Breaks at paragraph/newline/sentence boundaries. Guards against infinite loops when remaining text is shorter than overlap. Returns `{ text, pageStart, pageEnd }`. |
+
+### 2.5a `src/utils/embed-batch.js`
+
+Standalone child process worker for batch embedding. Isolates the ONNX WASM runtime (~4GB memory) to a short-lived process.
+
+**Usage:** `node embed-batch.js <docsDir> <outputPrefix>`
+Reads newline-delimited file paths from stdin.
+
+**Process:**
+1. Loads ONNX model via `rv.initOnnxEmbedder()` and determines embedding dimension
+2. For each file: parses (PDF or Markdown), chunks, embeds each chunk
+3. Writes embeddings as raw Float32LE to `<outputPrefix>.emb`
+4. Writes metadata as JSON to `<outputPrefix>.json` (includes `dim`, `records[]`, `errors`)
+5. Exits (OS reclaims all WASM memory)
+
+### 2.5b `src/utils/file-discovery.js`
 
 ```
+findFiles(dir: string, extension: string) → string[]
 findPdfs(dir: string) → string[]
+findMarkdownFiles(dir: string) → string[]
 ```
 
-Recursively finds all `.pdf` files under `dir`, skipping hidden directories (`.`-prefixed). Returns absolute paths.
+Generic recursive file finder with extension filter, skipping hidden directories. `findPdfs` and `findMarkdownFiles` are thin wrappers around `findFiles`.
 
 ### 2.6 `src/utils/formatting.js`
 
@@ -133,7 +160,7 @@ Recursively finds all `.pdf` files under `dir`, skipping hidden directories (`.`
 
 | Function | Signature | Description |
 |----------|-----------|-------------|
-| `extractEntities` | `(text: string) → string[]` | Case-insensitive substring matching against `PRODUCT_TYPES` and `FINANCIAL_CONCEPTS`. Returns prefixed IDs: `product:forward contract`, `concept:margin call`. |
+| `extractEntities` | `(text: string) → string[]` | Uses pre-compiled word-boundary regular expressions for case-insensitive matching against domain vocabularies (Westpac or Services Australia). Returns prefixed IDs: `product:forward contract`, `concept:margin call`. Patterns are compiled once at module load via `compilePatterns()`. |
 | `extractDocMeta` | `(filePath: string) → { brand, brandName, category, categoryName }` | Extracts brand and category from file path segments by matching against `BRANDS` and `CATEGORIES` keys. |
 
 ### 2.8 `src/graph/knowledge-graph.js`
@@ -174,19 +201,20 @@ The `KnowledgeGraph` class (303 lines) is the largest module. It maintains four 
 The `ConversationMemory` class (117 lines) provides persistent Q&A memory.
 
 **Storage:**
-- `memories[]` — Full Q&A records with embeddings, stored as JSON arrays in `memory.json`
+- `memories[]` — Full Q&A records with embeddings, stored as JSON arrays in `memory.json`. Capped at `MAX_MEMORIES = 200` with oldest-first eviction.
 - `history[]` — Last 100 role/content messages for LLM context window
 - `ReasoningBank` — In-memory embedding store (rebuilt on load from persisted embeddings)
 - `SonaCoordinator` — Trajectory recording for pattern learning
+- `_cachedEmbedding` — Per-memory Float32Array cache, computed on load/store, excluded from serialization
 
 **Methods:**
 
 | Method | Description |
 |--------|-------------|
-| `load()` | Reads `memory.json`, rebuilds ReasoningBank from stored embeddings. Idempotent (skips if already loaded). |
-| `save()` | Writes current state to `memory.json`. Converts Float32Arrays to regular arrays. |
-| `store(query, answer, sources, queryEmbedding)` | Stores a new Q&A interaction. Records SONA trajectory with retrieval and generation steps. Auto-saves. |
-| `findRelevant(queryEmbedding, k?)` | Returns top-k past interactions with cosine similarity > 0.5. Uses shared `cosineSim` from `utils/math`. |
+| `load()` | Reads `memory.json`, rebuilds ReasoningBank from stored embeddings, caches Float32Arrays. Idempotent (skips if already loaded). |
+| `save()` | Writes current state to `memory.json`. Strips `_cachedEmbedding` fields, converts Float32Arrays to regular arrays. |
+| `store(query, answer, sources, queryEmbedding)` | Stores a new Q&A interaction. Enforces `MAX_MEMORIES` cap. Records SONA trajectory with retrieval and generation steps. Auto-saves. |
+| `findRelevant(queryEmbedding, k?)` | Returns top-k past interactions with cosine similarity > 0.5. Uses cached Float32Arrays and shared `cosineSim` from `utils/math`. |
 | `getRecentHistory(n?)` | Returns last `n` messages from conversation history. |
 | `stats()` | Returns memory and SONA statistics. |
 
@@ -239,17 +267,26 @@ Detects follow-up queries (short queries or those starting with referential lang
 ### 2.15 `src/llm/rag.js`
 
 ```
-ragAnswer(query, results, memory?, { stream? }) → { answer, sources }
+ragAnswer(query, results, memory?, { stream?, domain? }) → { answer, sources }
+ragAnswerStream(query, results, memory?, res, { domain? }) → void
+getSystemPrompt(domain) → string
 ```
 
-Central RAG function used by both CLI and web server. Key design: the `{ stream }` option eliminates what was previously duplicated logic between the `ask` command and the `serve` command's `/api/ask` handler.
+Central RAG function used by both CLI and web server. Supports domain-aware system prompts via the `domain` parameter.
 
-| `stream` | Behavior |
+**Domain prompts:**
+- `Westpac` — Financial products, regulatory guidance, risk management (default)
+- `ServicesAustralia` — Government payments, eligibility criteria, entitlements
+
+The `getSystemPrompt(domain)` function selects the appropriate domain context and appends shared RAG rules (cite sources, acknowledge uncertainty, etc.).
+
+| Function | Behavior |
 |----------|----------|
-| `true` (default) | Prints sources summary, past interactions, and LLM tokens to stdout. Used by CLI commands. |
-| `false` | Silent operation. Returns `{ answer, sources }` for JSON API responses. Used by web server. |
+| `ragAnswer` (stream: true) | Prints sources summary, past interactions, and LLM tokens to stdout. Used by CLI commands. |
+| `ragAnswer` (stream: false) | Silent operation. Returns `{ answer, sources }` for JSON API responses. |
+| `ragAnswerStream` | Streams tokens via SSE to an HTTP response object. Detects client disconnects. Used by web server. |
 
-Both modes store the interaction in memory and return the same `{ answer, sources }` structure.
+All modes store the interaction in memory and return the same `{ answer, sources }` structure.
 
 ### 2.16 `src/server/viz-builder.js`
 
@@ -276,13 +313,13 @@ A self-contained HTML fragment (265 lines) containing CSS styles, HTML markup, a
 
 | Command | Lines | Description |
 |---------|-------|-------------|
-| `ingest.js` | 71 | Full scan of `./corpus`, extracts text, chunks, embeds, builds graph, saves index |
-| `update.js` | 106 | Incremental: detects new/modified/deleted PDFs by mtime, processes only changes, rebuilds graph |
+| `ingest.js` | ~130 | Batch child process orchestrator: discovers files, splits into batches of 500, spawns `embed-batch.js` workers, merges results, builds graph, saves index. Parent never loads ONNX. |
+| `update.js` | ~150 | Incremental: detects new/modified/deleted files by mtime, streams existing embeddings to disk, processes changes via batch child processes, merges results, rebuilds graph |
 | `search.js` | 20 | Loads index, calls `retrieve`, prints formatted results |
-| `ask.js` | 27 | Loads index + memory, calls `retrieve` + `ragAnswer` with streaming |
+| `ask.js` | 27 | Loads index + memory, calls `retrieve` + `ragAnswer` with streaming and domain parameter |
 | `interactive.js` | 184 | Full REPL with flags (`--flat`, `--k N`, `--search`, `--related`, `--entities`, `--memory`, `--forget`) |
-| `serve.js` | 144 | HTTP server. Injects graph data + chat panel into HTML. `/api/ask` uses `ragAnswer({stream: false})`. `/api/forget` clears memory. |
-| `stats.js` | 65 | Reads index/graph/memory and prints statistics |
+| `serve.js` | ~170 | HTTP server with graceful shutdown (SIGTERM/SIGINT). SSE streaming with client disconnect detection. Domain-aware RAG. |
+| `stats.js` | 65 | Reads index/graph/memory and prints statistics with debug logging |
 
 ---
 
@@ -401,12 +438,72 @@ The graph boost lowers the effective distance, promoting results that are both s
 
 ### 5.2 Module Size Distribution
 
-No module exceeds 303 lines (the KnowledgeGraph class, which is a single cohesive class). Most modules are under 100 lines:
+No module exceeds 303 lines (the KnowledgeGraph class, which is a single cohesive class). Most modules are under 150 lines:
 
 | Range | Count | Modules |
 |-------|-------|---------|
-| 10-20 lines | 4 | math, config, file-discovery, search cmd |
+| 10-20 lines | 3 | math, chunking, search cmd |
 | 20-50 lines | 5 | domain-constants, formatting, entity-extraction, retrieve, ask cmd |
-| 50-120 lines | 7 | pdf, client, query-rewrite, rag, ingest, stats, conversation-memory |
-| 100-200 lines | 3 | update, serve, interactive |
+| 50-120 lines | 8 | pdf, markdown, client, query-rewrite, rag, embed-batch, stats, conversation-memory |
+| 120-200 lines | 4 | config, ingest, update, serve, interactive |
 | 200-310 lines | 1 | knowledge-graph |
+
+---
+
+## 6. Operational Improvements
+
+### 6.1 Batch Child Process Embedding
+
+The ONNX WASM runtime pre-allocates ~4GB of WebAssembly memory that V8 counts against Node.js's heap limit. Previous single-process ingestion would OOM after 1-2 files because the WASM allocation left no room for actual work.
+
+**Architecture:**
+```
+ingest.js (parent)                    embed-batch.js (child × N)
+  │                                     │
+  ├─ Discover files                     ├─ Load ONNX model (~4GB WASM)
+  ├─ Split into batches of 500          ├─ For each file:
+  ├─ For each batch:                    │   ├─ Parse (PDF/Markdown)
+  │   ├─ Spawn child process            │   ├─ Chunk text
+  │   │   (--max-old-space-size=6144)   │   ├─ Embed chunks
+  │   ├─ Pipe file paths via stdin      │   └─ Write embedding to .emb
+  │   ├─ Wait for child to exit         ├─ Write metadata to .json
+  │   └─ Read batch results             └─ Exit (OS reclaims WASM)
+  ├─ Merge all batch embeddings
+  ├─ Build knowledge graph
+  └─ Save index
+```
+
+### 6.2 Chunking Loop Fix
+
+The `chunkText()` function had an infinite loop bug: when the remaining text at the end of a document was shorter than the overlap parameter (200 chars), `start = end - overlap` would not advance past the current position, creating millions of duplicate chunks. Fixed by:
+1. Breaking when `end >= cleaned.length` (reached end of text)
+2. Breaking when `newStart <= start` (no forward progress)
+3. Renaming the inner `chunkText` variable to `slice` to avoid shadowing the function name
+
+### 6.3 Domain-Aware RAG Prompts
+
+The RAG system prompt is now selected based on the active index domain:
+- **Westpac**: Financial products, regulatory requirements, risk management vocabulary
+- **ServicesAustralia**: Government payments, eligibility criteria, entitlements vocabulary
+- Shared rules: cite sources with `[Source N]`, acknowledge uncertainty, avoid speculation
+
+### 6.4 Graceful Server Shutdown
+
+The web server handles SIGTERM and SIGINT signals for clean shutdown:
+- Stops accepting new connections
+- Waits for active connections to close (5-second timeout)
+- SSE streams detect client disconnects and abort LLM generation
+
+### 6.5 Debug Logging
+
+When `GROVER_DEBUG=1`, the system logs additional diagnostic information:
+- LLM SSE parsing errors in `client.js`
+- Query rewrite failures in `query-rewrite.js`
+- Memory file parse errors in `stats.js`
+
+### 6.6 Memory Optimization
+
+- **Conversation memory cap**: `MAX_MEMORIES = 200` with oldest-first eviction prevents unbounded growth
+- **Cached Float32Arrays**: Embeddings loaded from JSON are cached as `Float32Array` on the memory object, avoiding repeated conversion during similarity search
+- **Streaming embeddings**: During ingestion, embeddings are written to binary temp files instead of accumulating in JS heap
+- **Absolute paths**: `config.js` uses `PROJECT_ROOT` for all paths, ensuring correct resolution regardless of working directory

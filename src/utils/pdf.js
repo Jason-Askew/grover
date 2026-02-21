@@ -1,4 +1,5 @@
-const { execSync } = require('child_process');
+const { execFileSync } = require('child_process');
+const { findChunkEnd } = require('./chunking');
 
 function extractPdfText(filePath) {
   const script = `
@@ -9,9 +10,10 @@ for i, page in enumerate(doc):
     pages.append({"page": i + 1, "text": page.get_text()})
 print(json.dumps({"numPages": len(pages), "pages": pages}))
 `;
-  const result = execSync(`python3 -c '${script}' "${filePath}"`, {
+  const result = execFileSync('python3', ['-c', script, filePath], {
     maxBuffer: 50 * 1024 * 1024,
     encoding: 'utf-8',
+    timeout: 30000,
   });
   return JSON.parse(result);
 }
@@ -35,17 +37,8 @@ function chunkPages(pages, maxChars = 1000, overlap = 200) {
   } else {
     let start = 0;
     while (start < fullText.length) {
-      let end = start + maxChars;
-      if (end < fullText.length) {
-        const slice = fullText.slice(start, end);
-        const lastPara = slice.lastIndexOf('\n\n');
-        const lastNewline = slice.lastIndexOf('\n');
-        const lastSentence = slice.lastIndexOf('. ');
-        if (lastPara > maxChars * 0.5) end = start + lastPara;
-        else if (lastNewline > maxChars * 0.5) end = start + lastNewline;
-        else if (lastSentence > maxChars * 0.5) end = start + lastSentence + 1;
-      }
-      rawChunks.push({ start, end: Math.min(end, fullText.length) });
+      const end = findChunkEnd(fullText, start, maxChars);
+      rawChunks.push({ start, end });
       start = end - overlap;
     }
   }

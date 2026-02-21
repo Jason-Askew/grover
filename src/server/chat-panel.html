@@ -391,10 +391,13 @@ async function sendMessage() {
         sources.map(s => {
           const pg = s.pageStart === s.pageEnd ? 'p.' + s.pageStart : 'pp.' + s.pageStart + '-' + s.pageEnd;
           const label = s.file.replace(/\.md$/, '').split('/').pop();
+          const safeFile = s.file.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+          const safeLabel = label.replace(/&/g, '&amp;').replace(/</g, '&lt;');
           if (s.url) {
-            return '<div data-doc="doc:' + s.file.replace(/"/g, '&quot;') + '" data-url="' + s.url.replace(/"/g, '&quot;') + '">[' + s.index + '] ' + label + ' (' + pg + ') ↗</div>';
+            const safeUrl = s.url.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+            return '<div data-doc="doc:' + safeFile + '" data-url="' + safeUrl + '">[' + s.index + '] ' + safeLabel + ' (' + pg + ') \u2197</div>';
           }
-          return '<div data-doc="doc:' + s.file.replace(/"/g, '&quot;') + '">[' + s.index + '] ' + label + ' (' + pg + ')</div>';
+          return '<div data-doc="doc:' + safeFile + '">[' + s.index + '] ' + safeLabel + ' (' + pg + ')</div>';
         }).join('') +
         '</div>';
     }
@@ -418,27 +421,13 @@ async function sendMessage() {
 }
 
 function formatAnswer(text) {
-  return text
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-    .replace(/\[Source (\d+)\]/g, '<strong style="color:#e67e22">[Source $1]</strong>')
-    .replace(/\n/g, '<br>');
+  return renderMarkdown(text);
 }
 
 function addMessage(role, text, extraHtml = '') {
   const div = document.createElement('div');
   div.className = 'chat-msg ' + role;
-  // Simple markdown-like formatting
-  let html = text
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-    .replace(/\[Source (\d+)\]/g, '<strong style="color:#e67e22">[Source $1]</strong>')
-    .replace(/\n/g, '<br>');
-  div.innerHTML = html + extraHtml;
+  div.innerHTML = renderMarkdown(text) + extraHtml;
   chatMessages.appendChild(div);
   chatMessages.scrollTop = chatMessages.scrollHeight;
 }

@@ -1,8 +1,11 @@
 {
-  "name": "ruvector-project",
+  "name": "grover",
   "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "description": "PDF document search and RAG system with knowledge graph visualization",
+  "main": "search.js",
+  "bin": {
+    "grover": "./search.js"
+  },
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1"
   },

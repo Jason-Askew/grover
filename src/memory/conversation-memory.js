@@ -3,6 +3,8 @@ const { ReasoningBank, SonaCoordinator, TrajectoryBuilder } = require('@ruvector
 const { INDEX_DIR, MEMORY_FILE, LLM_MODEL } = require('../config');
 const { cosineSim } = require('../utils/math');
 
+const MAX_MEMORIES = 200;
+
 class ConversationMemory {
   constructor(paths = null) {
     this.reasoningBank = new ReasoningBank();
@@ -24,8 +26,8 @@ class ConversationMemory {
 
         for (const mem of this.memories) {
           if (mem.embedding) {
-            const emb = new Float32Array(mem.embedding);
-            this.reasoningBank.store('qa', emb);
+            mem._cachedEmbedding = new Float32Array(mem.embedding);
+            this.reasoningBank.store('qa', mem._cachedEmbedding);
           }
         }
         console.log(`  Memory loaded: ${this.memories.length} past interactions, ${this.history.length} messages`);
@@ -40,10 +42,10 @@ class ConversationMemory {
     if (!fs.existsSync(this._indexDir)) fs.mkdirSync(this._indexDir, { recursive: true });
     const data = {
       history: this.history.slice(-100),
-      memories: this.memories.map(m => ({
-        ...m,
-        embedding: m.embedding ? Array.from(m.embedding) : null,
-      })),
+      memories: this.memories.map(m => {
+        const { _cachedEmbedding, ...rest } = m;
+        return { ...rest, embedding: m.embedding ? Array.from(m.embedding) : null };
+      }),
     };
     fs.writeFileSync(this._memoryFile, JSON.stringify(data));
   }
@@ -60,11 +62,17 @@ class ConversationMemory {
         score: s.combinedScore ?? s.score ?? s.vectorScore ?? 0,
       })),
       embedding: Array.from(queryEmbedding),
+      _cachedEmbedding: queryEmbedding,
       timestamp: new Date().toISOString(),
       quality: 1.0,
     };
 
     this.memories.push(memory);
+
+    // Cap memory size to prevent unbounded growth
+    if (this.memories.length > MAX_MEMORIES) {
+      this.memories = this.memories.slice(-MAX_MEMORIES);
+    }
 
     this.reasoningBank.store('qa', queryEmbedding);
 
@@ -87,8 +95,8 @@ class ConversationMemory {
     if (this.memories.length === 0) return [];
 
     const scored = this.memories.map((mem, i) => {
-      if (!mem.embedding) return { index: i, score: 0 };
-      const memEmb = new Float32Array(mem.embedding);
+      const memEmb = mem._cachedEmbedding || (mem.embedding ? new Float32Array(mem.embedding) : null);
+      if (!memEmb) return { index: i, score: 0 };
       const sim = cosineSim(queryEmbedding, memEmb);
       return { index: i, score: sim };
     });
