@@ -60,7 +60,7 @@ async function serve(port = 3000, indexName = null) {
     });
   }
 
-  function buildCitedVizPath(graph, sources) {
+  function buildCitedVizPath(graph, sources, vizData) {
     if (!graph) return null;
     const citedFiles = new Set(sources.map(s => s.file));
     const citedDocIds = new Set([...citedFiles].map(f => `doc:${f}`));
@@ -69,6 +69,7 @@ async function serve(port = 3000, indexName = null) {
     const pathNodes = new Set();
     const pathEdges = [];
 
+    // 1. From the raw graph: find brand, category, product, concept connections
     for (const docId of citedDocIds) {
       if (!graph.nodes.has(docId)) continue;
       pathNodes.add(docId);
@@ -80,9 +81,33 @@ async function serve(port = 3000, indexName = null) {
           pathNodes.add(edge.target);
           pathEdges.push({ source: docId, target: edge.target, type: edge.type });
         }
-        if (targetNode.type === 'document' && citedDocIds.has(edge.target)) {
-          pathEdges.push({ source: docId, target: edge.target, type: edge.type });
+      }
+    }
+
+    // 2. From the viz data: find doc-to-doc relationships (semantically_similar,
+    //    shared_concept) which are collapsed from chunk-level edges by viz-builder
+    if (vizData && vizData.edges) {
+      for (const edge of vizData.edges) {
+        if (citedDocIds.has(edge.source) && citedDocIds.has(edge.target)) {
+          pathNodes.add(edge.source);
+          pathNodes.add(edge.target);
+          pathEdges.push({ source: edge.source, target: edge.target, type: edge.type });
         }
+      }
+    }
+
+    // 3. Find shared entities between cited documents (entities connected to 2+ cited docs)
+    const entityToDocs = new Map();
+    for (const e of pathEdges) {
+      if (e.type === 'mentions') {
+        if (!entityToDocs.has(e.target)) entityToDocs.set(e.target, new Set());
+        entityToDocs.get(e.target).add(e.source);
+      }
+    }
+    for (const [entityId, docSet] of entityToDocs) {
+      if (docSet.size >= 2) {
+        // This entity connects multiple cited docs — keep it prominent
+        pathNodes.add(entityId);
       }
     }
 
@@ -185,7 +210,7 @@ async function serve(port = 3000, indexName = null) {
 
         const { answer, sources } = await ragAnswer(query, results, currentMemory, { stream: false, queryVec, domain: currentName });
 
-        const vizPath = buildCitedVizPath(currentIndex.graph, sources);
+        const vizPath = buildCitedVizPath(currentIndex.graph, sources, currentVizData);
 
         res.writeHead(200, { 'Content-Type': 'application/json' });
         if (vizPath) {
@@ -244,7 +269,7 @@ async function serve(port = 3000, indexName = null) {
           }
         }, { queryVec, domain: currentName });
 
-        const vizPath = buildCitedVizPath(currentIndex.graph, sources);
+        const vizPath = buildCitedVizPath(currentIndex.graph, sources, currentVizData);
 
         // Send done event with path
         res.write(`event: done\ndata: ${JSON.stringify({ path: vizPath, mode })}\n\n`);
