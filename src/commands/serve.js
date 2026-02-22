@@ -5,7 +5,7 @@ const http = require('http');
 const { ReasoningBank, SonaCoordinator } = require('@ruvector/ruvllm');
 const { PollyClient, SynthesizeSpeechCommand } = require('@aws-sdk/client-polly');
 const { LLM_MODEL, LLM_BASE_URL, POLLY_REGION, POLLY_VOICE, POLLY_ENGINE, resolveIndex, listIndexes } = require('../config');
-const { loadIndex } = require('../persistence/index-persistence');
+const { loadIndex, loadIndexWithFallback } = require('../persistence/index-persistence');
 const { retrieve } = require('../retrieval/retrieve');
 const { ragAnswer, ragAnswerStream } = require('../llm/rag');
 const { ConversationMemory } = require('../memory/conversation-memory');
@@ -21,11 +21,7 @@ async function serve(port = 3000, indexName = null) {
   const activeName = indexName || available[0];
   const paths = resolveIndex(activeName);
 
-  // Use named index paths, falling back to legacy for "Westpac" if needed
-  let index = loadIndex(paths);
-  if (!index && activeName === 'Westpac') {
-    index = loadIndex(); // try legacy ./index/
-  }
+  let index = loadIndexWithFallback(paths, activeName);
   if (!index) {
     console.log(`No index found for "${activeName}". Run: node search.js ingest --index ${activeName}`);
     return;
@@ -49,13 +45,56 @@ async function serve(port = 3000, indexName = null) {
 
   const chatPanelHtml = fs.readFileSync(path.join(__dirname, '..', 'server', 'chat-panel.html'), 'utf-8');
 
-  function readBody(req) {
+  function readBody(req, maxBytes = 1024 * 1024) {
     return new Promise((resolve, reject) => {
       let body = '';
-      req.on('data', chunk => { body += chunk; });
+      req.on('data', chunk => {
+        body += chunk;
+        if (body.length > maxBytes) {
+          req.destroy();
+          reject(new Error('Request body too large'));
+        }
+      });
       req.on('end', () => resolve(body));
       req.on('error', reject);
     });
+  }
+
+  function buildCitedVizPath(graph, sources) {
+    if (!graph) return null;
+    const citedFiles = new Set(sources.map(s => s.file));
+    const citedDocIds = new Set([...citedFiles].map(f => `doc:${f}`));
+    if (citedDocIds.size === 0) return null;
+
+    const pathNodes = new Set();
+    const pathEdges = [];
+
+    for (const docId of citedDocIds) {
+      if (!graph.nodes.has(docId)) continue;
+      pathNodes.add(docId);
+      const edges = graph.edges.get(docId) || [];
+      for (const edge of edges) {
+        const targetNode = graph.nodes.get(edge.target);
+        if (!targetNode) continue;
+        if (['brand', 'category', 'product', 'concept'].includes(targetNode.type)) {
+          pathNodes.add(edge.target);
+          pathEdges.push({ source: docId, target: edge.target, type: edge.type });
+        }
+        if (targetNode.type === 'document' && citedDocIds.has(edge.target)) {
+          pathEdges.push({ source: docId, target: edge.target, type: edge.type });
+        }
+      }
+    }
+
+    const edgeSet = new Set();
+    const uniqueEdges = pathEdges.filter(e => {
+      const k = `${e.source}|${e.target}|${e.type}`;
+      if (edgeSet.has(k)) return false;
+      edgeSet.add(k);
+      return true;
+    });
+
+    return { nodes: [...pathNodes], edges: uniqueEdges };
   }
 
   const polly = new PollyClient({ region: POLLY_REGION });
@@ -82,8 +121,7 @@ async function serve(port = 3000, indexName = null) {
     if (req.method === 'GET' && req.url === '/api/indexes') {
       const indexes = listIndexes().map(name => {
         const p = resolveIndex(name);
-        let idx = loadIndex(p);
-        if (!idx && name === 'Westpac') idx = loadIndex();
+        const idx = loadIndexWithFallback(p, name);
         return {
           name,
           chunks: idx ? idx.records.length : 0,
@@ -107,8 +145,7 @@ async function serve(port = 3000, indexName = null) {
         }
 
         const newPaths = resolveIndex(newName);
-        let newIndex = loadIndex(newPaths);
-        if (!newIndex && newName === 'Westpac') newIndex = loadIndex();
+        const newIndex = loadIndexWithFallback(newPaths, newName);
         if (!newIndex) {
           res.writeHead(404, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ error: `Index "${newName}" not found` }));
@@ -144,52 +181,11 @@ async function serve(port = 3000, indexName = null) {
 
         console.log(`[ask][${currentName}] ${query}`);
 
-        const { results, path: graphPath, mode } = await retrieve(query, currentIndex, { k: 8, graphMode: true, memory: currentMemory });
+        const { results, path: graphPath, mode, queryVec } = await retrieve(query, currentIndex, { k: 8, graphMode: true, memory: currentMemory });
 
-        const { answer, sources } = await ragAnswer(query, results, currentMemory, { stream: false });
+        const { answer, sources } = await ragAnswer(query, results, currentMemory, { stream: false, queryVec, domain: currentName });
 
-        // Build viz path from cited sources only
-        const citedFiles = new Set(sources.map(s => s.file));
-        const citedDocIds = new Set([...citedFiles].map(f => `doc:${f}`));
-
-        // Collect cited doc nodes + their brand/category/entity connections
-        let vizPath = null;
-        if (currentIndex.graph && citedDocIds.size > 0) {
-          const pathNodes = new Set();
-          const pathEdges = [];
-
-          for (const docId of citedDocIds) {
-            if (!currentIndex.graph.nodes.has(docId)) continue;
-            pathNodes.add(docId);
-
-            // Add brand, category, and entity connections for cited docs
-            const edges = currentIndex.graph.edges.get(docId) || [];
-            for (const edge of edges) {
-              const targetNode = currentIndex.graph.nodes.get(edge.target);
-              if (!targetNode) continue;
-              // Include brand, category, product, concept nodes
-              if (['brand', 'category', 'product', 'concept'].includes(targetNode.type)) {
-                pathNodes.add(edge.target);
-                pathEdges.push({ source: docId, target: edge.target, type: edge.type });
-              }
-              // Include edges between cited docs (e.g. semantically_similar)
-              if (targetNode.type === 'document' && citedDocIds.has(edge.target)) {
-                pathEdges.push({ source: docId, target: edge.target, type: edge.type });
-              }
-            }
-          }
-
-          // Deduplicate edges
-          const edgeSet = new Set();
-          const uniqueEdges = pathEdges.filter(e => {
-            const k = `${e.source}|${e.target}|${e.type}`;
-            if (edgeSet.has(k)) return false;
-            edgeSet.add(k);
-            return true;
-          });
-
-          vizPath = { nodes: [...pathNodes], edges: uniqueEdges };
-        }
+        const vizPath = buildCitedVizPath(currentIndex.graph, sources);
 
         res.writeHead(200, { 'Content-Type': 'application/json' });
         if (vizPath) {
@@ -217,7 +213,7 @@ async function serve(port = 3000, indexName = null) {
 
         console.log(`[ask-stream][${currentName}] ${query}`);
 
-        const { results, path: graphPath, mode } = await retrieve(query, currentIndex, { k: 8, graphMode: true, memory: currentMemory });
+        const { results, path: graphPath, mode, queryVec } = await retrieve(query, currentIndex, { k: 8, graphMode: true, memory: currentMemory });
 
         // Send SSE headers
         res.writeHead(200, {
@@ -237,43 +233,18 @@ async function serve(port = 3000, indexName = null) {
         }));
         res.write(`event: sources\ndata: ${JSON.stringify(sources)}\n\n`);
 
+        // Detect client disconnect
+        let clientDisconnected = false;
+        req.on('close', () => { clientDisconnected = true; });
+
         // Stream answer tokens
         const { answer } = await ragAnswerStream(query, results, currentMemory, (token) => {
-          res.write(`event: token\ndata: ${JSON.stringify(token)}\n\n`);
-        });
-
-        // Build viz path from cited sources
-        const citedFiles = new Set(sources.map(s => s.file));
-        const citedDocIds = new Set([...citedFiles].map(f => `doc:${f}`));
-        let vizPath = null;
-        if (currentIndex.graph && citedDocIds.size > 0) {
-          const pathNodes = new Set();
-          const pathEdges = [];
-          for (const docId of citedDocIds) {
-            if (!currentIndex.graph.nodes.has(docId)) continue;
-            pathNodes.add(docId);
-            const edges = currentIndex.graph.edges.get(docId) || [];
-            for (const edge of edges) {
-              const targetNode = currentIndex.graph.nodes.get(edge.target);
-              if (!targetNode) continue;
-              if (['brand', 'category', 'product', 'concept'].includes(targetNode.type)) {
-                pathNodes.add(edge.target);
-                pathEdges.push({ source: docId, target: edge.target, type: edge.type });
-              }
-              if (targetNode.type === 'document' && citedDocIds.has(edge.target)) {
-                pathEdges.push({ source: docId, target: edge.target, type: edge.type });
-              }
-            }
+          if (!clientDisconnected) {
+            res.write(`event: token\ndata: ${JSON.stringify(token)}\n\n`);
           }
-          const edgeSet = new Set();
-          const uniqueEdges = pathEdges.filter(e => {
-            const k = `${e.source}|${e.target}|${e.type}`;
-            if (edgeSet.has(k)) return false;
-            edgeSet.add(k);
-            return true;
-          });
-          vizPath = { nodes: [...pathNodes], edges: uniqueEdges };
-        }
+        }, { queryVec, domain: currentName });
+
+        const vizPath = buildCitedVizPath(currentIndex.graph, sources);
 
         // Send done event with path
         res.write(`event: done\ndata: ${JSON.stringify({ path: vizPath, mode })}\n\n`);
@@ -390,6 +361,19 @@ async function serve(port = 3000, indexName = null) {
     console.log(`  Active index: ${currentName} (${available.length} available: ${available.join(', ')})`);
     console.log(`  LLM: ${LLM_MODEL} via ${LLM_BASE_URL}\n`);
   });
+
+  function shutdown() {
+    console.log('\nShutting down server...');
+    server.close(() => {
+      console.log('Server closed.');
+      process.exit(0);
+    });
+    // Force exit if connections don't close within 5s
+    setTimeout(() => process.exit(1), 5000);
+  }
+
+  process.on('SIGTERM', shutdown);
+  process.on('SIGINT', shutdown);
 }
 
 module.exports = { serve };

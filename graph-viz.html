@@ -479,6 +479,7 @@ const EDGE_TYPE_META = {
 
 let graphData = null, network = null, visNodes = null, visEdges = null;
 let allVisNodes = [], allVisEdges = [], matchedDocIds = new Set();
+let visNodeById = {}; // O(1) node lookup by id
 
 // Filter state
 let filterState = {
@@ -714,6 +715,9 @@ function buildNetwork(data) {
     };
   });
 
+  visNodeById = {};
+  allVisNodes.forEach(n => { visNodeById[n.id] = n; });
+
   allVisEdges = data.edges.map((e, i) => {
     const meta = EDGE_TYPE_META[e.type] || { label: e.type };
     return {
@@ -943,8 +947,10 @@ function updateStats() {
   }).length;
   const visibleEdges = allVisEdges.filter(e => {
     if (!filterState.edgeTypes[e.edgeType]) return false;
-    const srcV = filterState.nodeValues[allVisNodes.find(n=>n.id===e.from)?.nodeType]?.[e.from];
-    const tgtV = filterState.nodeValues[allVisNodes.find(n=>n.id===e.to)?.nodeType]?.[e.to];
+    const srcN = visNodeById[e.from];
+    const tgtN = visNodeById[e.to];
+    const srcV = filterState.nodeValues[srcN?.nodeType]?.[e.from];
+    const tgtV = filterState.nodeValues[tgtN?.nodeType]?.[e.to];
     return srcV?.enabled && tgtV?.enabled;
   }).length;
   document.getElementById('cp-stats').textContent = `${visibleNodes}n · ${visibleEdges}e`;
@@ -987,10 +993,14 @@ async function openDocViewer(nodeId, node) {
   const title = node.meta?.title || node.label;
   document.getElementById('doc-viewer-title').textContent = title;
 
+  const urlEl = document.getElementById('doc-viewer-url');
+  urlEl.innerHTML = '';
   if (node.meta?.url) {
-    document.getElementById('doc-viewer-url').innerHTML = `<a href="${node.meta.url}" target="_blank">${node.meta.url} ↗</a>`;
-  } else {
-    document.getElementById('doc-viewer-url').innerHTML = '';
+    const a = document.createElement('a');
+    a.href = node.meta.url;
+    a.target = '_blank';
+    a.textContent = node.meta.url + ' \u2197';
+    urlEl.appendChild(a);
   }
 
   const vn = allVisNodes.find(n => n.id === nodeId);
@@ -1008,18 +1018,7 @@ async function openDocViewer(nodeId, node) {
       document.getElementById('doc-viewer-body').innerHTML = `<div class="doc-viewer-loading">${data.error}</div>`;
       return;
     }
-    // Render text as simple HTML with markdown-like formatting
-    const html = data.text
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/^### (.+)$/gm, '<h3>$1</h3>')
-      .replace(/^## (.+)$/gm, '<h2>$1</h2>')
-      .replace(/^# (.+)$/gm, '<h1>$1</h1>')
-      .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-      .replace(/^[-*] (.+)$/gm, '<li>$1</li>')
-      .replace(/\n\n/g, '</p><p>')
-      .replace(/\n/g, '<br>');
+    const html = renderMarkdown(data.text);
     document.getElementById('doc-viewer-body').innerHTML = `<p>${html}</p>`;
   } catch (e) {
     document.getElementById('doc-viewer-body').innerHTML = `<div class="doc-viewer-loading">Failed to load: ${e.message}</div>`;
@@ -1232,15 +1231,7 @@ function openMemoryDetail(m) {
   const body = document.getElementById('memory-viewer-body');
   document.getElementById('memory-count').textContent = new Date(m.timestamp).toLocaleString();
 
-  const answer = (m.answer || '')
-    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-    .replace(/^### (.+)$/gm, '<h3>$1</h3>')
-    .replace(/^## (.+)$/gm, '<h2>$1</h2>')
-    .replace(/^# (.+)$/gm, '<h1>$1</h1>')
-    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-    .replace(/^[-*] (.+)$/gm, '<li>$1</li>')
-    .replace(/\n\n/g, '</p><p>')
-    .replace(/\n/g, '<br>');
+  const answer = renderMarkdown(m.answer || '');
   const sources = (m.sources || []).map(s => {
     const label = typeof s === 'string' ? s : (s.file || s.title || 'source');
     return '<span>' + label.replace(/&/g,'&amp;').replace(/</g,'&lt;') + '</span>';
@@ -1272,15 +1263,7 @@ async function openMemoryViewer() {
 
     body.innerHTML = memories.map(m => {
       const time = m.timestamp ? new Date(m.timestamp).toLocaleString() : '';
-      const answer = (m.answer || '')
-        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-        .replace(/^### (.+)$/gm, '<h3>$1</h3>')
-        .replace(/^## (.+)$/gm, '<h2>$1</h2>')
-        .replace(/^# (.+)$/gm, '<h1>$1</h1>')
-        .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-        .replace(/^[-*] (.+)$/gm, '<li>$1</li>')
-        .replace(/\n\n/g, '</p><p>')
-        .replace(/\n/g, '<br>');
+      const answer = renderMarkdown(m.answer || '');
       const sources = (m.sources || []).map(s => {
         const label = typeof s === 'string' ? s : (s.file || s.title || 'source');
         return '<span>' + label.replace(/&/g,'&amp;').replace(/</g,'&lt;') + '</span>';
@@ -1358,6 +1341,23 @@ function focusNode(nodeId) {
   const pos=network.getPosition(nodeId);
   const domPos=network.canvasToDOM(pos);
   showTooltip(nodeId,domPos.x,domPos.y);
+}
+
+// ── Shared markdown renderer ────────────────────────
+
+function renderMarkdown(text) {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/^### (.+)$/gm, '<h3>$1</h3>')
+    .replace(/^## (.+)$/gm, '<h2>$1</h2>')
+    .replace(/^# (.+)$/gm, '<h1>$1</h1>')
+    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+    .replace(/\[Source (\d+)\]/g, '<strong style="color:#e67e22">[Source $1]</strong>')
+    .replace(/^[-*] (.+)$/gm, '<li>$1</li>')
+    .replace(/\n\n/g, '</p><p>')
+    .replace(/\n/g, '<br>');
 }
 
 // ── Entry ───────────────────────────────────────────

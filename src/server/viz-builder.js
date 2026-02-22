@@ -1,6 +1,13 @@
 function buildVizData(graph) {
   if (!graph) return { nodes: [], edges: [] };
 
+  // Build reverse lookup: chunkId -> "doc:<file>" (O(1) per lookup)
+  const chunkToDoc = new Map();
+  for (const [file, chunks] of graph.docChunks) {
+    const docId = `doc:${file}`;
+    for (const cId of chunks) chunkToDoc.set(cId, docId);
+  }
+
   const vizNodes = [];
   const vizNodeIds = new Set();
 
@@ -28,13 +35,6 @@ function buildVizData(graph) {
     }
   }
 
-  function findDocForChunk(chunkId) {
-    for (const [file, chunks] of graph.docChunks) {
-      if (chunks.includes(chunkId)) return `doc:${file}`;
-    }
-    return null;
-  }
-
   for (const [sourceId, edgeList] of graph.edges) {
     const sourceNode = graph.nodes.get(sourceId);
     if (!sourceNode) continue;
@@ -43,18 +43,18 @@ function buildVizData(graph) {
       if (!targetNode) continue;
       if (sourceNode.type === 'chunk' && targetNode.type === 'chunk') {
         // Collapse chunk-to-chunk similarity edges to doc-to-doc
-        const srcDoc = findDocForChunk(sourceId);
-        const tgtDoc = findDocForChunk(edge.target);
+        const srcDoc = chunkToDoc.get(sourceId);
+        const tgtDoc = chunkToDoc.get(edge.target);
         if (srcDoc && tgtDoc && srcDoc !== tgtDoc) {
           addEdge(srcDoc, tgtDoc, edge.type, edge.weight);
         }
         continue;
       }
       if (sourceNode.type === 'chunk') {
-        const docId = findDocForChunk(sourceId);
+        const docId = chunkToDoc.get(sourceId);
         if (docId) addEdge(docId, edge.target, edge.type, edge.weight);
       } else if (targetNode.type === 'chunk') {
-        const docId = findDocForChunk(edge.target);
+        const docId = chunkToDoc.get(edge.target);
         if (docId) addEdge(sourceId, docId, edge.type, edge.weight);
       } else {
         addEdge(sourceId, edge.target, edge.type, edge.weight);

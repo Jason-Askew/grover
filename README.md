@@ -146,13 +146,13 @@ node search.js stats
 
 ### Data flow
 
-1. **Ingest** — PDFs/Markdown in `./corpus/` are extracted, split into overlapping 1000-char chunks (200 overlap), embedded using a local ONNX model (all-MiniLM-L6-v2, 384d), and organized into a knowledge graph.
+1. **Ingest** — PDFs/Markdown in `./corpus/` are extracted, split into overlapping 1000-char chunks (200 overlap), embedded using a local ONNX model (all-MiniLM-L6-v2, 384d), and organized into a knowledge graph. Embedding is performed in batch child processes to isolate the ONNX WASM runtime's memory from the parent process.
 
 2. **Search** — Query is embedded with the same model and compared via brute-force cosine distance against all chunks. The knowledge graph expands results by following entity co-occurrence and semantic similarity edges across documents. Graph boost is capped at 30% of the vector score range.
 
-3. **RAG** — Retrieved chunks are formatted as numbered sources, combined with relevant past interactions from conversation memory, and sent to an LLM with a brand-aware system prompt for answer generation with inline citations.
+3. **RAG** — Retrieved chunks are formatted as numbered sources, combined with relevant past interactions from conversation memory, and sent to an LLM with a domain-aware system prompt (customized per index) for answer generation with inline citations.
 
-4. **Memory & Learning** — Each Q&A interaction is stored with its query embedding. On subsequent queries, semantically similar past interactions (cosine similarity > 0.5) are retrieved and included in LLM context. Follow-up queries are automatically rewritten into standalone searches via the LLM.
+4. **Memory & Learning** — Each Q&A interaction is stored with its query embedding (capped at 200 memories with LRU eviction). On subsequent queries, semantically similar past interactions (cosine similarity > 0.5) are retrieved and included in LLM context. Follow-up queries are automatically rewritten into standalone searches via the LLM.
 
 ### Adaptive learning
 
@@ -185,7 +185,19 @@ Entity extraction uses domain-specific vocabularies:
 - **Westpac domain** — 23 product types, 28 financial concepts, 4 brands, 4 categories
 - **Services Australia domain** — ~50 payment types, ~60 government concepts, 4 brands, 19 categories
 
-Extraction is case-insensitive substring matching. Brand and category metadata is derived from the file path hierarchy.
+Extraction uses pre-compiled word-boundary regular expressions for accurate matching. Brand and category metadata is derived from the file path hierarchy.
+
+### Batch embedding architecture
+
+The ONNX WASM runtime pre-allocates ~4GB of WebAssembly memory that V8 counts against Node.js's heap limit. To handle large corpora (thousands of files), ingestion and updates use a batch child process architecture:
+
+1. The parent process splits files into batches of 500
+2. Each batch spawns a short-lived child process with `--max-old-space-size=6144`
+3. The child loads the ONNX model, embeds all chunks, writes embeddings (binary) and metadata (JSON) to disk
+4. The child exits, fully releasing the WASM memory allocation
+5. The parent merges all batch results and builds the knowledge graph
+
+This ensures bounded memory usage regardless of corpus size.
 
 ### Query rewriting
 
@@ -218,12 +230,13 @@ src/
   config.js                Paths, environment variables, index resolution
   domain-constants.js      Westpac financial domain vocabulary
   domain-constants-sa.js   Services Australia domain vocabulary
-  utils/                   PDF extraction, markdown parsing, math helpers
+  utils/                   PDF extraction, markdown parsing, chunking, math helpers
+  utils/embed-batch.js     Batch embedding child process worker (ONNX isolation)
   graph/                   Knowledge graph construction, entity extraction
   memory/                  Conversation memory with SONA trajectories
   persistence/             Index save/load (binary embeddings + JSON)
   retrieval/               Vector search and hybrid retrieval pipeline
-  llm/                     LLM client, query rewriting, RAG generation
+  llm/                     LLM client, query rewriting, domain-aware RAG generation
   server/                  Viz data builder and chat panel HTML
   commands/                CLI command implementations (ingest, serve, etc.)
 docs/                      Design documentation

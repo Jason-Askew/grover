@@ -19,7 +19,7 @@ function queryText() {
 }
 
 function kValue(def) {
-  return parseInt(args.find((_, i) => args[i - 1] === '--k') || String(def));
+  return parseInt(args.find((_, i) => args[i - 1] === '--k') || String(def), 10);
 }
 
 switch (cmd) {
@@ -41,7 +41,7 @@ switch (cmd) {
     break;
   case 'serve':
   case 'web': {
-    const port = parseInt(args[0]) || 3000;
+    const port = parseInt(args[0], 10) || 3000;
     require('./src/commands/serve').serve(port, indexName).catch(console.error);
     break;
   }

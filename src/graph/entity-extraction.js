@@ -1,31 +1,37 @@
 const { PRODUCT_TYPES, FINANCIAL_CONCEPTS, BRANDS, CATEGORIES } = require('../domain-constants');
 const { PAYMENT_TYPES, GOVERNMENT_CONCEPTS, SA_BRANDS, SA_CATEGORIES } = require('../domain-constants-sa');
 
+function compilePatterns(terms) {
+  return terms.map(t => ({
+    term: t,
+    pattern: new RegExp(`\\b${t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i'),
+  }));
+}
+
 const DOMAINS = {
   Westpac: {
-    products: PRODUCT_TYPES,
-    concepts: FINANCIAL_CONCEPTS,
+    products: compilePatterns(PRODUCT_TYPES),
+    concepts: compilePatterns(FINANCIAL_CONCEPTS),
     brands: BRANDS,
     categories: CATEGORIES,
   },
   ServicesAustralia: {
-    products: PAYMENT_TYPES,
-    concepts: GOVERNMENT_CONCEPTS,
+    products: compilePatterns(PAYMENT_TYPES),
+    concepts: compilePatterns(GOVERNMENT_CONCEPTS),
     brands: SA_BRANDS,
     categories: SA_CATEGORIES,
   },
 };
 
 function extractEntities(text, domain = 'Westpac') {
-  const lower = text.toLowerCase();
   const entities = new Set();
   const d = DOMAINS[domain] || DOMAINS.Westpac;
 
-  for (const product of d.products) {
-    if (lower.includes(product)) entities.add(`product:${product}`);
+  for (const { term, pattern } of d.products) {
+    if (pattern.test(text)) entities.add(`product:${term}`);
   }
-  for (const concept of d.concepts) {
-    if (lower.includes(concept)) entities.add(`concept:${concept}`);
+  for (const { term, pattern } of d.concepts) {
+    if (pattern.test(text)) entities.add(`concept:${term}`);
   }
 
   return [...entities];

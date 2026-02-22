@@ -1,11 +1,10 @@
 const fs = require('fs');
 const { EMBEDDINGS_FILE, GRAPH_FILE, MEMORY_FILE, resolveIndex } = require('../config');
-const { loadIndex } = require('../persistence/index-persistence');
+const { loadIndexWithFallback } = require('../persistence/index-persistence');
 
 function stats(indexName = null) {
   const paths = indexName ? resolveIndex(indexName) : null;
-  let index = loadIndex(paths);
-  if (!index && indexName === 'Westpac') index = loadIndex();
+  const index = loadIndexWithFallback(paths, indexName);
   if (!index) { console.log('No index found. Run: node search.js ingest'); return; }
 
   const embeddingsFile = paths ? paths.embeddingsFile : EMBEDDINGS_FILE;
@@ -65,7 +64,9 @@ function stats(indexName = null) {
       console.log(`Past interactions: ${(memData.memories || []).length}`);
       console.log(`History messages: ${(memData.history || []).length}`);
       console.log(`Memory file: ${(fs.statSync(memoryFile).size / 1024).toFixed(0)} KB`);
-    } catch (e) {}
+    } catch (e) {
+      if (process.env.GROVER_DEBUG === '1') console.error('[debug] Memory parse error:', e.message);
+    }
   }
 }
 

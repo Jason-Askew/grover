@@ -1,4 +1,5 @@
 const fs = require('fs');
+const { findChunkEnd } = require('./chunking');
 
 function parseMarkdown(filePath) {
   const raw = fs.readFileSync(filePath, 'utf-8');
@@ -43,21 +44,15 @@ function chunkText(text, maxChars = 1000, overlap = 200) {
   const chunks = [];
   let start = 0;
   while (start < cleaned.length) {
-    let end = start + maxChars;
-    if (end < cleaned.length) {
-      const slice = cleaned.slice(start, end);
-      const lastPara = slice.lastIndexOf('\n\n');
-      const lastNewline = slice.lastIndexOf('\n');
-      const lastSentence = slice.lastIndexOf('. ');
-      if (lastPara > maxChars * 0.5) end = start + lastPara;
-      else if (lastNewline > maxChars * 0.5) end = start + lastNewline;
-      else if (lastSentence > maxChars * 0.5) end = start + lastSentence + 1;
+    const end = findChunkEnd(cleaned, start, maxChars);
+    const slice = cleaned.slice(start, end).trim();
+    if (slice.length >= 20) {
+      chunks.push({ text: slice, pageStart: 1, pageEnd: 1 });
     }
-    const chunkText = cleaned.slice(start, Math.min(end, cleaned.length)).trim();
-    if (chunkText.length >= 20) {
-      chunks.push({ text: chunkText, pageStart: 1, pageEnd: 1 });
-    }
-    start = end - overlap;
+    if (end >= cleaned.length) break;
+    const newStart = end - overlap;
+    if (newStart <= start) break;
+    start = newStart;
   }
   return chunks;
 }

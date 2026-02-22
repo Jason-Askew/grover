@@ -1,6 +1,8 @@
 const { LLM_API_KEY } = require('../config');
 const { callLLM } = require('./client');
 
+const DEBUG = process.env.GROVER_DEBUG === '1';
+
 async function rewriteQuery(query, memory) {
   if (!memory || !LLM_API_KEY) return query;
 
@@ -35,7 +37,7 @@ Do not explain, do not add quotes, just output the query text.`,
       return cleaned;
     }
   } catch (e) {
-    // Fall through to original query on error
+    if (DEBUG) console.error('[debug] Query rewrite error:', e.message);
   }
 
   return query;

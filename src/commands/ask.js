@@ -1,14 +1,13 @@
 const rv = require('ruvector');
 const { LLM_MODEL, LLM_BASE_URL, resolveIndex } = require('../config');
-const { loadIndex } = require('../persistence/index-persistence');
+const { loadIndexWithFallback } = require('../persistence/index-persistence');
 const { retrieve } = require('../retrieval/retrieve');
 const { ragAnswer } = require('../llm/rag');
 const { ConversationMemory } = require('../memory/conversation-memory');
 
 async function ask(query, k = 8, indexName = null) {
   const paths = indexName ? resolveIndex(indexName) : null;
-  let index = loadIndex(paths);
-  if (!index && indexName === 'Westpac') index = loadIndex();
+  const index = loadIndexWithFallback(paths, indexName);
   if (!index) { console.log('No index found. Run: node search.js ingest'); return; }
 
   const hasGraph = !!index.graph;
@@ -22,9 +21,9 @@ async function ask(query, k = 8, indexName = null) {
   memory.load();
 
   console.log(`Retrieving context for: "${query}"`);
-  const { results } = await retrieve(query, index, { k, graphMode: true, memory });
+  const { results, queryVec } = await retrieve(query, index, { k, graphMode: true, memory });
 
-  await ragAnswer(query, results, memory);
+  await ragAnswer(query, results, memory, { queryVec, domain: indexName });
 }
 
 module.exports = { ask };
