@@ -4,7 +4,7 @@ const path = require('path');
 const http = require('http');
 const { ReasoningBank, SonaCoordinator } = require('@ruvector/ruvllm');
 const { PollyClient, SynthesizeSpeechCommand } = require('@aws-sdk/client-polly');
-const { LLM_MODEL, LLM_BASE_URL, POLLY_REGION, POLLY_VOICE, POLLY_ENGINE, resolveIndex, listIndexes } = require('../config');
+const { LLM_MODEL, LLM_BASE_URL, POLLY_REGION, POLLY_VOICE, POLLY_ENGINE, CORS_ORIGIN, resolveIndex, listIndexes } = require('../config');
 const { loadIndex, loadIndexWithFallback } = require('../persistence/index-persistence');
 const { retrieve } = require('../retrieval/retrieve');
 const { ragAnswer, ragAnswerStream } = require('../llm/rag');
@@ -83,8 +83,9 @@ async function serve(port = 3000, indexName = null) {
   const polly = new PollyClient({ region: POLLY_REGION });
 
   const server = http.createServer(async (req, res) => {
+    const corsOrigin = CORS_ORIGIN || `http://localhost:${port}`;
     if (authConfig) {
-      res.setHeader('Access-Control-Allow-Origin', `http://localhost:${port}`);
+      res.setHeader('Access-Control-Allow-Origin', corsOrigin);
       res.setHeader('Access-Control-Allow-Credentials', 'true');
     } else {
       res.setHeader('Access-Control-Allow-Origin', '*');
@@ -103,6 +104,13 @@ async function serve(port = 3000, indexName = null) {
     }
 
     const url = new URL(req.url, 'http://localhost');
+
+    // ── Health check (unauthenticated) ──
+    if (req.method === 'GET' && url.pathname === '/health') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ status: 'ok', index: currentName, chunks: currentIndex.records.length }));
+      return;
+    }
 
     // ── HTML page ──
     if (req.method === 'GET' && (url.pathname === '/' || url.pathname === '/index.html')) {
