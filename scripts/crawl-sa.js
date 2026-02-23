@@ -398,7 +398,7 @@ async function main() {
   console.log(`Errors: ${errors}`);
   console.log(`Total corpus: ${existingUrls.size + saved} pages`);
   if (saved > 0) {
-    console.log(`\nRun: node search.js ingest --index ServicesAustralia`);
+    console.log(`\nRun: node grover.js ingest --index ServicesAustralia`);
   }
 }
 

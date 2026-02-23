@@ -1,3 +1,5 @@
+const { inferCategoryFromFilename } = require('../graph/entity-extraction');
+
 function buildVizData(graph) {
   if (!graph) return { nodes: [], edges: [] };
 
@@ -8,15 +10,113 @@ function buildVizData(graph) {
     for (const cId of chunks) chunkToDoc.set(cId, docId);
   }
 
+  // --- Retroactive category inference for existing graph data ---
+  // Reassign docs whose only category is 'general' to an inferred category
+  const generalCatId = 'category:general';
+  const edgeList = graph.edges.get(generalCatId) || [];
+  const incomingToGeneral = new Set();
+
+  // Collect all edges that point TO category:general
+  for (const [sourceId, edges] of graph.edges) {
+    for (const e of edges) {
+      if (e.target === generalCatId && e.type === 'in_category') {
+        incomingToGeneral.add(sourceId);
+      }
+    }
+  }
+  // Also check edges FROM category:general
+  for (const e of edgeList) {
+    if (e.type === 'in_category') incomingToGeneral.add(e.target);
+  }
+
+  let reclassified = 0;
+  for (const docId of incomingToGeneral) {
+    const node = graph.nodes.get(docId);
+    if (!node || node.type !== 'document') continue;
+    const basename = node.label.split('/').pop();
+    const inferred = inferCategoryFromFilename(basename);
+    if (!inferred) continue;
+
+    const newCatId = `category:${inferred}`;
+    // Ensure category node exists
+    if (!graph.nodes.has(newCatId)) {
+      const { SA_CATEGORIES } = require('../domain-constants-sa');
+      graph.nodes.set(newCatId, {
+        type: 'category',
+        label: SA_CATEGORIES[inferred] || inferred,
+        meta: {},
+      });
+    }
+
+    // Rewrite edges: remove in_category to general, add to new category
+    const docEdges = graph.edges.get(docId);
+    if (docEdges) {
+      for (let i = docEdges.length - 1; i >= 0; i--) {
+        if (docEdges[i].target === generalCatId && docEdges[i].type === 'in_category') {
+          docEdges[i].target = newCatId;
+          reclassified++;
+        }
+      }
+    }
+    // Also rewrite reverse edges from general -> doc
+    for (let i = edgeList.length - 1; i >= 0; i--) {
+      if (edgeList[i].target === docId && edgeList[i].type === 'in_category') {
+        edgeList[i].target = docId; // keep target
+        // Move this edge to the new category's edge list
+        if (!graph.edges.has(newCatId)) graph.edges.set(newCatId, []);
+        graph.edges.get(newCatId).push(edgeList[i]);
+        edgeList.splice(i, 1);
+      }
+    }
+  }
+  if (reclassified > 0) {
+    console.log(`[viz] reclassified ${reclassified} docs from general to inferred categories`);
+  }
+
   const vizNodes = [];
   const vizNodeIds = new Set();
 
-  // Skip category:general — it's a catch-all with too many edges and destabilises the graph
-  const SKIP_IDS = new Set(['category:general']);
+  // Count remaining edges to general — skip if still too large (>50 docs)
+  let generalRemaining = 0;
+  for (const [, edges] of graph.edges) {
+    for (const e of edges) {
+      if (e.target === generalCatId && e.type === 'in_category') generalRemaining++;
+    }
+  }
+  const skipGeneral = generalRemaining > 50;
+  if (skipGeneral) {
+    console.log(`[viz] category:general still has ${generalRemaining} docs — skipping hub node`);
+  }
+
+  // Merge legacy brand nodes into matching category nodes (SA_BRANDS was emptied;
+  // existing graph data may still contain brand:X that duplicates category:X)
+  const mergedBrands = new Set();
+  for (const [id, node] of graph.nodes) {
+    if (node.type !== 'brand') continue;
+    const key = id.replace('brand:', '');
+    const catId = `category:${key}`;
+    if (!graph.nodes.has(catId)) continue;
+    mergedBrands.add(id);
+    // Redirect all edges from/to this brand node to the category node
+    for (const [, srcEdges] of graph.edges) {
+      for (const e of srcEdges) {
+        if (e.target === id) e.target = catId;
+      }
+    }
+    const brandEdges = graph.edges.get(id) || [];
+    for (const e of brandEdges) {
+      if (!graph.edges.has(catId)) graph.edges.set(catId, []);
+      graph.edges.get(catId).push({ target: e.target, type: e.type, weight: e.weight });
+    }
+  }
+  if (mergedBrands.size > 0) {
+    console.log(`[viz] merged ${mergedBrands.size} legacy brand nodes into categories`);
+  }
 
   for (const [id, node] of graph.nodes) {
     if (node.type === 'chunk') continue;
-    if (SKIP_IDS.has(id)) continue;
+    if (skipGeneral && id === generalCatId) continue;
+    if (mergedBrands.has(id)) continue;
     vizNodes.push({ id, type: node.type, label: node.label, meta: node.meta || {} });
     vizNodeIds.add(id);
   }
@@ -35,10 +135,10 @@ function buildVizData(graph) {
     }
   }
 
-  for (const [sourceId, edgeList] of graph.edges) {
+  for (const [sourceId, srcEdges] of graph.edges) {
     const sourceNode = graph.nodes.get(sourceId);
     if (!sourceNode) continue;
-    for (const edge of edgeList) {
+    for (const edge of srcEdges) {
       const targetNode = graph.nodes.get(edge.target);
       if (!targetNode) continue;
       if (sourceNode.type === 'chunk' && targetNode.type === 'chunk') {
@@ -132,7 +232,7 @@ function buildVizData(graph) {
   const connectedIds = new Set();
   for (const e of vizEdges) { connectedIds.add(e.source); connectedIds.add(e.target); }
   const prunedNodes = vizNodes.filter(n => {
-    if (n.type === 'brand' || n.type === 'document') return true;
+    if (n.type === 'brand') return true;
     return connectedIds.has(n.id);
   });
   console.log(`[viz] pruned to ${prunedNodes.length} nodes`);

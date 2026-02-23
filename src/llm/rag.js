@@ -105,7 +105,9 @@ async function ragAnswer(query, results, memory = null, { stream = true, queryVe
     console.log('\n  Answer:\n');
   }
 
-  const answer = await callLLM(messages, { stream });
+  const result = await callLLM(messages, { stream });
+  const answer = result.content;
+  const usage = result.usage;
 
   if (stream) {
     console.log('\n');
@@ -116,20 +118,22 @@ async function ragAnswer(query, results, memory = null, { stream = true, queryVe
     memoryId = await memory.store(query, answer, results, queryEmb);
   }
 
-  return { answer, sources: buildSourcesSummary(results), memoryId };
+  return { answer, sources: buildSourcesSummary(results), memoryId, usage };
 }
 
 async function ragAnswerStream(query, results, memory, onToken, { queryVec = null, domain = null } = {}) {
   const { messages, queryEmb } = await buildRagContext(query, results, memory, queryVec, domain);
 
-  const answer = await callLLMStream(messages, onToken);
+  const result = await callLLMStream(messages, onToken);
+  const answer = result.content;
+  const usage = result.usage;
 
   let memoryId = null;
   if (memory && queryEmb) {
     memoryId = await memory.store(query, answer, results, queryEmb);
   }
 
-  return { answer, sources: buildSourcesSummary(results), memoryId };
+  return { answer, sources: buildSourcesSummary(results), memoryId, usage };
 }
 
 module.exports = { getSystemPrompt, ragAnswer, ragAnswerStream };

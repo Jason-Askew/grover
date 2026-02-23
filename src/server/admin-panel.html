@@ -1,0 +1,604 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Grover Admin Panel</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Inter', sans-serif; background: #f5f6f8; color: #333; min-height: 100vh; }
+
+  .admin-header {
+    background: #2a5a9a;
+    color: #fff;
+    padding: 16px 32px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .admin-header h1 { font-size: 18px; font-weight: 600; }
+  .admin-header a {
+    color: #fff;
+    text-decoration: none;
+    font-size: 13px;
+    padding: 6px 14px;
+    border: 1px solid rgba(255,255,255,0.4);
+    border-radius: 6px;
+    transition: all 0.15s;
+  }
+  .admin-header a:hover { background: rgba(255,255,255,0.15); border-color: rgba(255,255,255,0.7); }
+
+  .admin-container { max-width: 960px; margin: 32px auto; padding: 0 24px; }
+
+  .admin-toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 16px;
+  }
+  .admin-toolbar h2 { font-size: 16px; font-weight: 600; color: #333; }
+
+  .btn {
+    font-family: 'Inter', sans-serif;
+    font-size: 13px;
+    font-weight: 500;
+    padding: 8px 16px;
+    border: none;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+  .btn-primary { background: #2a5a9a; color: #fff; }
+  .btn-primary:hover { background: #3a7bd5; }
+  .btn-sm { padding: 5px 10px; font-size: 12px; }
+  .btn-danger { background: #e74c3c; color: #fff; }
+  .btn-danger:hover { background: #c0392b; }
+  .btn-secondary { background: #eee; color: #333; border: 1px solid #ddd; }
+  .btn-secondary:hover { background: #ddd; }
+
+  .admin-table {
+    width: 100%;
+    border-collapse: collapse;
+    background: #fff;
+    border-radius: 8px;
+    overflow: hidden;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.08);
+  }
+  .admin-table th {
+    background: #f8f9fb;
+    text-align: left;
+    padding: 10px 14px;
+    font-size: 11px;
+    font-weight: 600;
+    color: #666;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    border-bottom: 1px solid #eee;
+  }
+  .admin-table td {
+    padding: 10px 14px;
+    font-size: 13px;
+    border-bottom: 1px solid #f0f0f0;
+  }
+  .admin-table tr:last-child td { border-bottom: none; }
+  .admin-table tr:hover td { background: #fafbfd; }
+
+  .status-badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-size: 11px;
+    font-weight: 500;
+  }
+  .status-badge.active { background: #e8f5e9; color: #2e7d32; }
+  .status-badge.disabled { background: #fce4ec; color: #c62828; }
+
+  .actions-cell { display: flex; gap: 6px; }
+
+  /* Modal */
+  .modal-overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.4);
+    z-index: 1000;
+    align-items: center;
+    justify-content: center;
+  }
+  .modal-overlay.visible { display: flex; }
+  .modal {
+    background: #fff;
+    border-radius: 10px;
+    padding: 24px 28px;
+    width: 420px;
+    max-width: 90vw;
+    box-shadow: 0 8px 30px rgba(0,0,0,0.15);
+  }
+  .modal h3 {
+    font-size: 16px;
+    font-weight: 600;
+    margin-bottom: 16px;
+    color: #333;
+  }
+  .modal label {
+    display: block;
+    font-size: 12px;
+    font-weight: 500;
+    color: #555;
+    margin-bottom: 4px;
+    margin-top: 12px;
+  }
+  .modal label:first-of-type { margin-top: 0; }
+  .modal input[type="text"],
+  .modal input[type="email"],
+  .modal input[type="password"] {
+    width: 100%;
+    padding: 8px 12px;
+    border: 1px solid #ddd;
+    border-radius: 6px;
+    font-family: 'Inter', sans-serif;
+    font-size: 13px;
+    outline: none;
+    transition: border-color 0.15s;
+  }
+  .modal input:focus { border-color: #2a5a9a; }
+  .modal-check {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 14px;
+    font-size: 13px;
+    color: #555;
+  }
+  .modal-check input[type="checkbox"] { width: 16px; height: 16px; }
+  .modal-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    margin-top: 20px;
+  }
+  .modal-error {
+    color: #c62828;
+    font-size: 12px;
+    margin-top: 8px;
+    display: none;
+  }
+  .modal-error.visible { display: block; }
+
+  .tab-bar {
+    display: flex;
+    gap: 0;
+    margin-bottom: 24px;
+    border-bottom: 2px solid #e0e0e0;
+  }
+  .tab-btn {
+    font-family: 'Inter', sans-serif;
+    font-size: 14px;
+    font-weight: 500;
+    padding: 10px 24px;
+    background: none;
+    border: none;
+    border-bottom: 2px solid transparent;
+    margin-bottom: -2px;
+    cursor: pointer;
+    color: #777;
+    transition: all 0.15s;
+  }
+  .tab-btn.active { color: #2a5a9a; border-bottom-color: #2a5a9a; }
+  .tab-btn:hover { color: #333; }
+  .tab-content { display: none; }
+  .tab-content.active { display: block; }
+
+  .stat-cards {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 16px;
+    margin-bottom: 24px;
+  }
+  .stat-card {
+    background: #fff;
+    border-radius: 8px;
+    padding: 20px;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.08);
+  }
+  .stat-card .label { font-size: 11px; font-weight: 600; color: #888; text-transform: uppercase; letter-spacing: 0.5px; }
+  .stat-card .value { font-size: 28px; font-weight: 700; color: #333; margin-top: 6px; }
+
+  .access-denied {
+    text-align: center;
+    margin-top: 80px;
+    font-size: 16px;
+    color: #888;
+  }
+  .access-denied a { color: #2a5a9a; }
+
+  .loading-msg {
+    text-align: center;
+    padding: 40px;
+    color: #999;
+    font-size: 14px;
+  }
+</style>
+</head>
+<body>
+
+<div class="admin-header">
+  <h1>Grover Admin Panel</h1>
+  <a href="/">Back to App</a>
+</div>
+
+<div class="admin-container">
+  <div id="loading" class="loading-msg">Loading users...</div>
+  <div id="denied" class="access-denied" style="display:none;">
+    <p>Access denied. You need admin privileges to view this page.</p>
+    <p style="margin-top:12px;"><a href="/">Return to app</a></p>
+  </div>
+
+  <div id="main-content" style="display:none;">
+    <div class="tab-bar">
+      <button class="tab-btn active" onclick="switchTab('users')">Users</button>
+      <button class="tab-btn" onclick="switchTab('usage')">Usage</button>
+    </div>
+
+    <div id="tab-users" class="tab-content active">
+      <div class="admin-toolbar">
+        <h2>Users</h2>
+        <button class="btn btn-primary" onclick="showAddModal()">+ Add User</button>
+      </div>
+      <table class="admin-table">
+        <thead>
+          <tr>
+            <th>Username</th>
+            <th>Email</th>
+            <th>Name</th>
+            <th>Status</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody id="users-tbody"></tbody>
+      </table>
+    </div>
+
+    <div id="tab-usage" class="tab-content">
+      <div class="stat-cards" id="usage-cards">
+        <div class="stat-card"><div class="label">Total Requests</div><div class="value" id="stat-requests">-</div></div>
+        <div class="stat-card"><div class="label">Total Tokens</div><div class="value" id="stat-tokens">-</div></div>
+        <div class="stat-card"><div class="label">Estimated Cost</div><div class="value" id="stat-cost">-</div></div>
+      </div>
+
+      <h3 style="font-size:14px;font-weight:600;margin-bottom:12px;">Per-User Breakdown</h3>
+      <table class="admin-table" style="margin-bottom:24px;">
+        <thead>
+          <tr><th>User</th><th>Requests</th><th>Prompt Tokens</th><th>Completion Tokens</th><th>Cost</th></tr>
+        </thead>
+        <tbody id="usage-user-tbody"></tbody>
+      </table>
+
+      <h3 style="font-size:14px;font-weight:600;margin-bottom:12px;">Recent Requests</h3>
+      <table class="admin-table">
+        <thead>
+          <tr><th>Time</th><th>User</th><th>Model</th><th>Tokens</th><th>Cost</th></tr>
+        </thead>
+        <tbody id="usage-recent-tbody"></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<!-- Add/Edit User Modal -->
+<div class="modal-overlay" id="user-modal">
+  <div class="modal">
+    <h3 id="modal-title">Add User</h3>
+    <label>Username</label>
+    <input type="text" id="m-username" autocomplete="off">
+    <label>Email</label>
+    <input type="email" id="m-email" autocomplete="off">
+    <label>First Name</label>
+    <input type="text" id="m-firstName" autocomplete="off">
+    <label>Last Name</label>
+    <input type="text" id="m-lastName" autocomplete="off">
+    <div id="m-password-group">
+      <label>Password</label>
+      <input type="password" id="m-password" autocomplete="new-password">
+    </div>
+    <div class="modal-check">
+      <input type="checkbox" id="m-enabled" checked>
+      <span>Enabled</span>
+    </div>
+    <div class="modal-error" id="modal-error"></div>
+    <div class="modal-actions">
+      <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-primary" id="modal-submit" onclick="submitUser()">Create</button>
+    </div>
+  </div>
+</div>
+
+<!-- Reset Password Modal -->
+<div class="modal-overlay" id="pw-modal">
+  <div class="modal">
+    <h3>Reset Password</h3>
+    <p style="font-size:13px;color:#666;margin-bottom:12px;" id="pw-user-label"></p>
+    <label>New Password</label>
+    <input type="password" id="pw-password" autocomplete="new-password">
+    <div class="modal-error" id="pw-error"></div>
+    <div class="modal-actions">
+      <button class="btn btn-secondary" onclick="closePwModal()">Cancel</button>
+      <button class="btn btn-primary" id="pw-submit" onclick="submitPassword()">Reset</button>
+    </div>
+  </div>
+</div>
+
+<script>
+let users = [];
+let editingUserId = null;
+
+async function loadUsers() {
+  try {
+    const resp = await fetch('/api/admin/users');
+    if (resp.status === 401 || resp.status === 403) {
+      document.getElementById('loading').style.display = 'none';
+      document.getElementById('denied').style.display = 'block';
+      return;
+    }
+    users = await resp.json();
+    document.getElementById('loading').style.display = 'none';
+    document.getElementById('main-content').style.display = 'block';
+    renderUsers();
+  } catch (e) {
+    document.getElementById('loading').textContent = 'Failed to load users: ' + e.message;
+  }
+}
+
+function renderUsers() {
+  const tbody = document.getElementById('users-tbody');
+  tbody.innerHTML = users.map(u => {
+    const name = [u.firstName || '', u.lastName || ''].join(' ').trim() || '-';
+    const email = u.email || '-';
+    const status = u.enabled
+      ? '<span class="status-badge active">Active</span>'
+      : '<span class="status-badge disabled">Disabled</span>';
+    return '<tr>' +
+      '<td>' + esc(u.username) + '</td>' +
+      '<td>' + esc(email) + '</td>' +
+      '<td>' + esc(name) + '</td>' +
+      '<td>' + status + '</td>' +
+      '<td class="actions-cell">' +
+        '<button class="btn btn-sm btn-secondary" onclick="showEditModal(\'' + u.id + '\')">Edit</button>' +
+        '<button class="btn btn-sm btn-secondary" onclick="showPwModal(\'' + u.id + '\',\'' + esc(u.username) + '\')">Password</button>' +
+        '<button class="btn btn-sm btn-danger" onclick="deleteUser(\'' + u.id + '\',\'' + esc(u.username) + '\')">Delete</button>' +
+      '</td>' +
+    '</tr>';
+  }).join('');
+}
+
+function esc(s) {
+  if (!s) return '';
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+
+// ── Add/Edit modal ────────────────────────────────────────
+
+function showAddModal() {
+  editingUserId = null;
+  document.getElementById('modal-title').textContent = 'Add User';
+  document.getElementById('modal-submit').textContent = 'Create';
+  document.getElementById('m-username').value = '';
+  document.getElementById('m-username').disabled = false;
+  document.getElementById('m-email').value = '';
+  document.getElementById('m-firstName').value = '';
+  document.getElementById('m-lastName').value = '';
+  document.getElementById('m-password').value = '';
+  document.getElementById('m-enabled').checked = true;
+  document.getElementById('m-password-group').style.display = 'block';
+  hideError('modal-error');
+  document.getElementById('user-modal').classList.add('visible');
+}
+
+function showEditModal(userId) {
+  const u = users.find(x => x.id === userId);
+  if (!u) return;
+  editingUserId = userId;
+  document.getElementById('modal-title').textContent = 'Edit User';
+  document.getElementById('modal-submit').textContent = 'Save';
+  document.getElementById('m-username').value = u.username;
+  document.getElementById('m-username').disabled = true;
+  document.getElementById('m-email').value = u.email || '';
+  document.getElementById('m-firstName').value = u.firstName || '';
+  document.getElementById('m-lastName').value = u.lastName || '';
+  document.getElementById('m-password').value = '';
+  document.getElementById('m-enabled').checked = u.enabled;
+  document.getElementById('m-password-group').style.display = 'none';
+  hideError('modal-error');
+  document.getElementById('user-modal').classList.add('visible');
+}
+
+function closeModal() {
+  document.getElementById('user-modal').classList.remove('visible');
+  editingUserId = null;
+}
+
+async function submitUser() {
+  const btn = document.getElementById('modal-submit');
+  btn.disabled = true;
+  hideError('modal-error');
+
+  try {
+    if (editingUserId) {
+      // Update
+      const body = {
+        email: document.getElementById('m-email').value.trim(),
+        firstName: document.getElementById('m-firstName').value.trim(),
+        lastName: document.getElementById('m-lastName').value.trim(),
+        enabled: document.getElementById('m-enabled').checked,
+      };
+      const resp = await fetch('/api/admin/users/' + editingUserId, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if (!resp.ok) {
+        const data = await resp.json();
+        throw new Error(data.error || 'Update failed');
+      }
+    } else {
+      // Create
+      const username = document.getElementById('m-username').value.trim();
+      if (!username) { showError('modal-error', 'Username is required'); btn.disabled = false; return; }
+      const body = {
+        username,
+        email: document.getElementById('m-email').value.trim(),
+        firstName: document.getElementById('m-firstName').value.trim(),
+        lastName: document.getElementById('m-lastName').value.trim(),
+        password: document.getElementById('m-password').value,
+        enabled: document.getElementById('m-enabled').checked,
+      };
+      const resp = await fetch('/api/admin/users', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if (!resp.ok) {
+        const data = await resp.json();
+        throw new Error(data.error || 'Create failed');
+      }
+    }
+    closeModal();
+    await loadUsers();
+  } catch (e) {
+    showError('modal-error', e.message);
+  }
+  btn.disabled = false;
+}
+
+// ── Reset password modal ──────────────────────────────────
+
+let pwUserId = null;
+
+function showPwModal(userId, username) {
+  pwUserId = userId;
+  document.getElementById('pw-user-label').textContent = 'Reset password for ' + username;
+  document.getElementById('pw-password').value = '';
+  hideError('pw-error');
+  document.getElementById('pw-modal').classList.add('visible');
+}
+
+function closePwModal() {
+  document.getElementById('pw-modal').classList.remove('visible');
+  pwUserId = null;
+}
+
+async function submitPassword() {
+  const btn = document.getElementById('pw-submit');
+  const password = document.getElementById('pw-password').value;
+  if (!password) { showError('pw-error', 'Password is required'); return; }
+
+  btn.disabled = true;
+  hideError('pw-error');
+
+  try {
+    const resp = await fetch('/api/admin/users/' + pwUserId + '/reset-password', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password }),
+    });
+    if (!resp.ok) {
+      const data = await resp.json();
+      throw new Error(data.error || 'Reset failed');
+    }
+    closePwModal();
+  } catch (e) {
+    showError('pw-error', e.message);
+  }
+  btn.disabled = false;
+}
+
+// ── Delete ────────────────────────────────────────────────
+
+async function deleteUser(userId, username) {
+  if (!confirm('Delete user "' + username + '"? This cannot be undone.')) return;
+  try {
+    const resp = await fetch('/api/admin/users/' + userId, { method: 'DELETE' });
+    if (!resp.ok) {
+      const data = await resp.json();
+      throw new Error(data.error || 'Delete failed');
+    }
+    await loadUsers();
+  } catch (e) {
+    alert('Failed to delete: ' + e.message);
+  }
+}
+
+// ── Helpers ───────────────────────────────────────────────
+
+function showError(id, msg) {
+  const el = document.getElementById(id);
+  el.textContent = msg;
+  el.classList.add('visible');
+}
+function hideError(id) {
+  const el = document.getElementById(id);
+  el.textContent = '';
+  el.classList.remove('visible');
+}
+
+// ── Tabs ──────────────────────────────────────────────────
+
+function switchTab(name) {
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+  document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+  document.querySelector(`.tab-btn[onclick="switchTab('${name}')"]`).classList.add('active');
+  document.getElementById('tab-' + name).classList.add('active');
+  if (name === 'usage') loadUsage();
+}
+
+async function loadUsage() {
+  try {
+    const resp = await fetch('/api/admin/usage');
+    if (!resp.ok) return;
+    const data = await resp.json();
+    const t = data.totals || {};
+    document.getElementById('stat-requests').textContent = fmtNum(t.requests || 0);
+    document.getElementById('stat-tokens').textContent = fmtNum(t.totalTokens || 0);
+    document.getElementById('stat-cost').textContent = '$' + (t.estimatedCost || 0).toFixed(4);
+
+    const userTbody = document.getElementById('usage-user-tbody');
+    const byUser = data.byUser || {};
+    const userRows = Object.entries(byUser).sort((a, b) => b[1].requests - a[1].requests);
+    userTbody.innerHTML = userRows.length === 0
+      ? '<tr><td colspan="5" style="text-align:center;color:#999;">No usage data yet</td></tr>'
+      : userRows.map(([uid, u]) =>
+        '<tr><td>' + esc(uid) + '</td><td>' + fmtNum(u.requests) + '</td><td>' + fmtNum(u.promptTokens) + '</td><td>' + fmtNum(u.completionTokens) + '</td><td>$' + u.estimatedCost.toFixed(4) + '</td></tr>'
+      ).join('');
+
+    const recentTbody = document.getElementById('usage-recent-tbody');
+    const recent = (data.recent || []).slice(-50).reverse();
+    recentTbody.innerHTML = recent.length === 0
+      ? '<tr><td colspan="5" style="text-align:center;color:#999;">No recent requests</td></tr>'
+      : recent.map(r => {
+        const time = new Date(r.timestamp).toLocaleString();
+        const tokens = (r.promptTokens || 0) + (r.completionTokens || 0);
+        return '<tr><td>' + esc(time) + '</td><td>' + esc(r.userId) + '</td><td>' + esc(r.model) + '</td><td>' + fmtNum(tokens) + '</td><td>$' + (r.cost || 0).toFixed(4) + '</td></tr>';
+      }).join('');
+  } catch (e) {
+    console.error('Failed to load usage:', e);
+  }
+}
+
+function fmtNum(n) {
+  return (n || 0).toLocaleString();
+}
+
+// Close modals on overlay click
+document.getElementById('user-modal').addEventListener('click', function(e) {
+  if (e.target === this) closeModal();
+});
+document.getElementById('pw-modal').addEventListener('click', function(e) {
+  if (e.target === this) closePwModal();
+});
+
+// Boot
+loadUsers();
+</script>
+</body>
+</html>

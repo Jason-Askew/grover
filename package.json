@@ -2,9 +2,9 @@
   "name": "grover",
   "version": "1.0.0",
   "description": "PDF document search and RAG system with knowledge graph visualization",
-  "main": "search.js",
+  "main": "grover.js",
   "bin": {
-    "grover": "./search.js"
+    "grover": "./grover.js"
   },
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1"
@@ -17,6 +17,7 @@
     "@aws-sdk/client-polly": "^3.993.0",
     "@ruvector/ruvllm": "^2.4.1",
     "cheerio": "^1.2.0",
+    "jose": "^5.10.0",
     "ruvector": "^0.1.97",
     "turndown": "^7.2.2"
   }

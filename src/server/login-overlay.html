@@ -1,0 +1,73 @@
+<style>
+  .login-overlay {
+    position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(0,0,0,0.55);
+    z-index: 9999;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .login-card {
+    background: #fff; border-radius: 14px; padding: 48px 40px;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.18);
+    text-align: center; max-width: 360px; width: 90%;
+  }
+  .login-card h1 {
+    font-family: 'Inter', system-ui, sans-serif;
+    font-size: 22px; font-weight: 700; color: #1a3a5c;
+    margin: 0 0 8px;
+  }
+  .login-card p {
+    font-family: 'Inter', system-ui, sans-serif;
+    font-size: 14px; color: #666; margin: 0 0 28px;
+  }
+  .login-btn {
+    display: inline-block; padding: 12px 32px;
+    background: #2a5a9a; color: #fff; border: none;
+    border-radius: 8px; font-size: 15px; font-weight: 600;
+    font-family: 'Inter', system-ui, sans-serif;
+    cursor: pointer; transition: background 0.15s;
+    text-decoration: none;
+  }
+  .login-btn:hover { background: #3a7bd5; }
+</style>
+
+<div class="login-overlay" id="login-overlay">
+  <div class="login-card">
+    <h1>Sign in to Grover</h1>
+    <p>Authenticate to access the knowledge base</p>
+    <button class="login-btn" onclick="startLogin()">Sign in</button>
+  </div>
+</div>
+
+<script>
+async function startLogin() {
+  const config = window.__AUTH_CONFIG__;
+  if (!config) { alert('Auth not configured'); return; }
+
+  // Generate PKCE challenge (S256)
+  const verifierBytes = new Uint8Array(32);
+  crypto.getRandomValues(verifierBytes);
+  const codeVerifier = btoa(String.fromCharCode(...verifierBytes))
+    .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+
+  const encoder = new TextEncoder();
+  const digest = await crypto.subtle.digest('SHA-256', encoder.encode(codeVerifier));
+  const codeChallenge = btoa(String.fromCharCode(...new Uint8Array(digest)))
+    .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+
+  // Store verifier and config for the callback page
+  sessionStorage.setItem('grover_pkce_verifier', codeVerifier);
+  sessionStorage.setItem('grover_auth_config', JSON.stringify(config));
+
+  // Redirect to Keycloak
+  const params = new URLSearchParams({
+    client_id: config.clientId,
+    response_type: 'code',
+    scope: 'openid profile email',
+    redirect_uri: window.location.origin + '/auth/callback',
+    code_challenge: codeChallenge,
+    code_challenge_method: 'S256',
+  });
+
+  window.location.href = config.authEndpoint + '?' + params.toString();
+}
+</script>

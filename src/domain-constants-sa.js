@@ -18,15 +18,15 @@ const PAYMENT_TYPES = [
   'newborn upfront payment', 'income support payment',
   'fares allowance', 'abstudy fares allowance',
   'child dental benefits schedule',
-  // Child Support
-  'child support', 'child support assessment', 'child support payment',
+  // Child Support (note: 'child support' omitted — captured by category:child-support)
+  'child support assessment', 'child support payment',
   // Parental leave & families
   'parental leave pay', 'dad and partner pay', 'child care subsidy',
   'additional child care subsidy', 'stillborn baby payment',
   // Students
   'student start-up loan', 'relocation scholarship',
-  // Medicare
-  'medicare', 'medicare card', 'medicare safety net',
+  // Medicare (note: 'medicare' omitted — captured by category:medicare)
+  'medicare card', 'medicare safety net',
   'medicare benefits schedule', 'bulk billing',
   'private health insurance rebate', 'ambulance cover',
   // Disability
@@ -57,8 +57,8 @@ const GOVERNMENT_CONCEPTS = [
   'principal home', 'exempt assets',
   'bereavement payment', 'lump sum bereavement payment',
   'nominee', 'correspondence nominee', 'payment nominee',
-  // myGov & digital
-  'mygov', 'digital identity', 'linking services',
+  // myGov & digital (note: 'mygov' omitted — captured by category:mygov)
+  'digital identity', 'linking services',
   // Child support concepts
   'child support formula', 'care percentage', 'fixed annual rate',
   'minimum annual rate', 'child support period', 'taxable income',
@@ -75,12 +75,9 @@ const GOVERNMENT_CONCEPTS = [
   'reciprocal health care agreement', 'international social security agreement',
 ];
 
-const SA_BRANDS = {
-  'centrelink': 'Centrelink',
-  'medicare': 'Medicare',
-  'child-support': 'Child Support',
-  'mygov': 'myGov',
-};
+// SA has a single agency — service lines (Centrelink, Medicare, etc.) are captured
+// as categories rather than brands, avoiding duplicate nodes in the knowledge graph.
+const SA_BRANDS = {};
 
 const SA_CATEGORIES = {
   'payments': 'Payments',
@@ -103,6 +100,20 @@ const SA_CATEGORIES = {
   'indigenous': 'Indigenous Australians',
   'migrants': 'Migrants & Refugees',
   'veterans': 'Veterans',
+  // Extended categories for corpus coverage
+  'translations': 'Translations & Languages',
+  'health-professionals': 'Health Professionals',
+  'pharmaceutical-benefits': 'Pharmaceutical Benefits (PBS)',
+  'forms': 'Forms',
+  'income-management': 'Income Management',
+  'compliance': 'Compliance & Fraud',
+  'debt-repayment': 'Debt & Repayment',
+  'corporate': 'About Services Australia',
+  'international': 'International Services',
+  'digital-services': 'Digital Services',
+  'income-assets': 'Income & Assets',
+  'tax': 'Tax',
+  'businesses': 'Business Services',
 };
 
 module.exports = { PAYMENT_TYPES, GOVERNMENT_CONCEPTS, SA_BRANDS, SA_CATEGORIES };

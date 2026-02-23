@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Grover — Signing in...</title>
+  <style>
+    body {
+      font-family: 'Inter', system-ui, sans-serif;
+      display: flex; align-items: center; justify-content: center;
+      min-height: 100vh; margin: 0;
+      background: #f3f4f6; color: #333;
+    }
+    .card {
+      background: #fff; border-radius: 12px; padding: 40px;
+      box-shadow: 0 2px 12px rgba(0,0,0,0.08);
+      text-align: center; max-width: 380px;
+    }
+    .card h2 { margin: 0 0 12px; font-size: 18px; }
+    .card p { margin: 8px 0; font-size: 14px; color: #666; }
+    .error { color: #c0392b; }
+    .spinner {
+      width: 32px; height: 32px; margin: 16px auto;
+      border: 3px solid #e0e0e0; border-top-color: #2a5a9a;
+      border-radius: 50%; animation: spin 0.8s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h2>Signing in...</h2>
+    <div class="spinner" id="spinner"></div>
+    <p id="status">Exchanging authorization code...</p>
+  </div>
+
+  <script>
+  (async function() {
+    const status = document.getElementById('status');
+    const spinner = document.getElementById('spinner');
+
+    try {
+      const params = new URLSearchParams(window.location.search);
+      const code = params.get('code');
+      const stateParam = params.get('state');
+
+      if (!code) throw new Error('No authorization code received');
+
+      // Retrieve PKCE verifier and auth config from sessionStorage
+      const codeVerifier = sessionStorage.getItem('grover_pkce_verifier');
+      const configJson = sessionStorage.getItem('grover_auth_config');
+      if (!codeVerifier || !configJson) throw new Error('Missing PKCE state — please try signing in again');
+
+      const config = JSON.parse(configJson);
+
+      // Exchange code for tokens at Keycloak token endpoint
+      const tokenResp = await fetch(config.tokenEndpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({
+          grant_type: 'authorization_code',
+          client_id: config.clientId,
+          code,
+          redirect_uri: window.location.origin + '/auth/callback',
+          code_verifier: codeVerifier,
+        }),
+      });
+
+      if (!tokenResp.ok) {
+        const err = await tokenResp.text();
+        throw new Error('Token exchange failed: ' + err);
+      }
+
+      const tokens = await tokenResp.json();
+      status.textContent = 'Creating session...';
+
+      // POST id_token to our server to create a session cookie
+      const sessionResp = await fetch('/api/auth/session', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id_token: tokens.id_token }),
+      });
+
+      if (!sessionResp.ok) throw new Error('Session creation failed');
+
+      // Clean up sessionStorage
+      sessionStorage.removeItem('grover_pkce_verifier');
+      sessionStorage.removeItem('grover_auth_config');
+
+      // Redirect to app
+      window.location.href = '/';
+
+    } catch (e) {
+      spinner.style.display = 'none';
+      status.className = 'error';
+      status.textContent = e.message;
+      const retry = document.createElement('p');
+      retry.innerHTML = '<a href="/">Return to Grover</a>';
+      status.parentNode.appendChild(retry);
+    }
+  })();
+  </script>
+</body>
+</html>

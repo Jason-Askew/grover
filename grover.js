@@ -50,7 +50,7 @@ switch (cmd) {
     break;
   default:
     console.log(`
-Usage: node search.js <command> [--index <name>]
+Usage: node grover.js <command> [--index <name>]
 
 Commands:
   ingest              Scan corpus, build vector index + knowledge graph
@@ -69,5 +69,9 @@ Environment:
   OPENAI_API_KEY      Required for RAG (ask command and interactive mode)
   OPENAI_BASE_URL     Override API endpoint (default: https://api.openai.com/v1)
   LLM_MODEL           Override model (default: gpt-4o-mini)
+  KEYCLOAK_URL        Keycloak server URL (enables OIDC authentication)
+  KEYCLOAK_REALM      Keycloak realm name (default: grover)
+  KEYCLOAK_CLIENT_ID  Keycloak client ID (default: grover-web)
+  AUTH_SESSION_TTL    Session TTL in ms (default: 86400000 / 24h)
 `);
 }

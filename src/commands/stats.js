@@ -5,7 +5,7 @@ const { loadIndexWithFallback } = require('../persistence/index-persistence');
 function stats(indexName = null) {
   const paths = indexName ? resolveIndex(indexName) : null;
   const index = loadIndexWithFallback(paths, indexName);
-  if (!index) { console.log('No index found. Run: node search.js ingest'); return; }
+  if (!index) { console.log('No index found. Run: node grover.js ingest'); return; }
 
   const embeddingsFile = paths ? paths.embeddingsFile : EMBEDDINGS_FILE;
   const graphFile = paths ? paths.graphFile : GRAPH_FILE;

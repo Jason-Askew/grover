@@ -11,7 +11,7 @@ const { ConversationMemory } = require('../memory/conversation-memory');
 async function interactive(indexName = null) {
   const paths = indexName ? resolveIndex(indexName) : null;
   const index = loadIndexWithFallback(paths, indexName);
-  if (!index) { console.log('No index found. Run: node search.js ingest'); return; }
+  if (!index) { console.log('No index found. Run: node grover.js ingest'); return; }
 
   const hasGraph = !!index.graph;
   const hasLLM = !!LLM_API_KEY;
