@@ -1,3 +1,4 @@
 node_modules/
 ruvector.db
 .DS_Store
+.env

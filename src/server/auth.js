@@ -16,16 +16,24 @@ function getAuthConfig() {
   const clientId = process.env.KEYCLOAK_CLIENT_ID || 'grover-web';
   const ttl = parseInt(process.env.AUTH_SESSION_TTL, 10) || 86400000; // 24h
 
+  const serverUrl = url.replace(/\/$/, '');
+  // Browser-facing URL: in Docker, the browser reaches Keycloak via localhost,
+  // while the server reaches it via the Docker service name (e.g. keycloak:8080).
+  const publicUrl = (process.env.KEYCLOAK_PUBLIC_URL || url).replace(/\/$/, '');
+
   return {
-    url: url.replace(/\/$/, ''),
+    url: serverUrl,
     realm,
     clientId,
     ttl,
-    issuer: `${url.replace(/\/$/, '')}/realms/${realm}`,
-    jwksUri: `${url.replace(/\/$/, '')}/realms/${realm}/protocol/openid-connect/certs`,
-    tokenEndpoint: `${url.replace(/\/$/, '')}/realms/${realm}/protocol/openid-connect/token`,
-    authEndpoint: `${url.replace(/\/$/, '')}/realms/${realm}/protocol/openid-connect/auth`,
-    logoutEndpoint: `${url.replace(/\/$/, '')}/realms/${realm}/protocol/openid-connect/logout`,
+    // issuer must match the JWT `iss` claim from the browser OIDC flow
+    issuer: `${publicUrl}/realms/${realm}`,
+    // JWKS fetched server-side (can use internal Docker network URL)
+    jwksUri: `${serverUrl}/realms/${realm}/protocol/openid-connect/certs`,
+    // Browser-facing endpoints (sent to the client for OIDC redirects)
+    tokenEndpoint: `${publicUrl}/realms/${realm}/protocol/openid-connect/token`,
+    authEndpoint: `${publicUrl}/realms/${realm}/protocol/openid-connect/auth`,
+    logoutEndpoint: `${publicUrl}/realms/${realm}/protocol/openid-connect/logout`,
   };
 }
 

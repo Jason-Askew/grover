@@ -34,6 +34,28 @@ node grover.js serve 8080     # custom port
 node grover.js stats
 ```
 
+### Docker
+
+```bash
+# Copy and edit env file
+cp .env.example .env
+
+# Build and run (Grover + Keycloak)
+docker compose up --build
+
+# Run detached
+docker compose up --build -d
+docker compose logs -f        # watch logs
+
+# Run a specific command in the container
+docker compose run grover ingest --index MyCorpus
+
+# Health check
+curl http://localhost:3000/health
+```
+
+The Docker image uses Node 22 (bookworm-slim) with Python 3 + pymupdf. Volumes mount `./corpus` (read-only), `./index` (read-write), and `./config` (read-only). Keycloak must pass its healthcheck before Grover starts.
+
 There is no build step, no linter, and no test suite configured.
 
 ## Environment Variables
@@ -42,9 +64,11 @@ There is no build step, no linter, and no test suite configured.
 - `OPENAI_BASE_URL` — Override API endpoint (default: `https://api.openai.com/v1`)
 - `LLM_MODEL` — Override model (default: `gpt-4o-mini`)
 - `KEYCLOAK_URL` — Keycloak server URL (enables OIDC authentication when set)
+- `KEYCLOAK_PUBLIC_URL` — Browser-facing Keycloak URL (defaults to `KEYCLOAK_URL`; in Docker, set to `http://localhost:8080` while `KEYCLOAK_URL` uses the internal service name)
 - `KEYCLOAK_REALM` — Keycloak realm name (default: `grover`)
 - `KEYCLOAK_CLIENT_ID` — Keycloak client ID (default: `grover-web`)
 - `AUTH_SESSION_TTL` — Session TTL in ms (default: `86400000` / 24h)
+- `CORS_ORIGIN` — Override CORS allowed origin (default: `http://localhost:<port>`)
 
 ## Architecture
 
@@ -87,6 +111,9 @@ corpus/             — Source PDFs organized by brand/category (corpus/Westpac/
 docs/               — System documentation (design docs)
 index/              — Generated index files (embeddings.bin, metadata.json, graph.json, chats.json, etc.)
 config/             — External configuration (docker-compose for Keycloak)
+Dockerfile          — Multi-stage Docker build (Node 22 + Python 3 + pymupdf)
+docker-compose.yml  — Full stack: Grover + Keycloak with healthchecks and networking
+.env.example        — Template for environment variables (copy to .env)
 ```
 
 ### Web UI
@@ -97,6 +124,7 @@ config/             — External configuration (docker-compose for Keycloak)
 - Supports Keycloak OIDC authentication (login overlay, PKCE flow, server-side sessions)
 - Provides an admin panel at `/admin` for user management and usage statistics
 - Supports user feedback (thumbs up/down with categorization) for self-adaptive learning
+- `GET /health` — Unauthenticated health check returning `{ status, index, chunks }`
 - `POST /api/ask` — Query endpoint returning `{ answer, sources, path, mode }`
 - `POST /api/ask-stream` — Streaming RAG via SSE
 - `POST /api/forget` — Clears conversation memory

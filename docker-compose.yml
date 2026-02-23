@@ -1,7 +1,27 @@
 services:
+  grover:
+    build: .
+    ports:
+      - "3000:3000"
+    env_file: .env
+    environment:
+      KEYCLOAK_URL: http://keycloak:8080
+      KEYCLOAK_PUBLIC_URL: http://localhost:8080
+      CORS_ORIGIN: http://localhost:3000
+    volumes:
+      - ./corpus:/app/corpus:ro
+      - ./index:/app/index
+      - ./config:/app/config:ro
+    depends_on:
+      keycloak:
+        condition: service_healthy
+    networks:
+      - grover-net
+    restart: unless-stopped
+
   keycloak:
     image: quay.io/keycloak/keycloak:24.0
-    command: start-dev --import-realm
+    command: start-dev --import-realm --health-enabled=true
     environment:
       KEYCLOAK_ADMIN: admin
       KEYCLOAK_ADMIN_PASSWORD: admin
@@ -9,3 +29,16 @@ services:
       - "8080:8080"
     volumes:
       - ./config/keycloak:/opt/keycloak/data/import
+    healthcheck:
+      test: ["CMD-SHELL", "cat < /dev/null > /dev/tcp/localhost/8080 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      start_period: 90s
+      retries: 10
+    networks:
+      - grover-net
+    restart: unless-stopped
+
+networks:
+  grover-net:
+    driver: bridge
