@@ -56,7 +56,9 @@ export OPENAI_BASE_URL=https://api.openai.com/v1
 # Optional: model override (default: gpt-4o-mini)
 export LLM_MODEL=gpt-4o-mini
 
-# Optional: Amazon Polly TTS
+# Optional: Amazon Polly TTS (requires AWS credentials)
+export AWS_ACCESS_KEY_ID=AKIA...
+export AWS_SECRET_ACCESS_KEY=...
 export AWS_REGION=ap-southeast-2
 export POLLY_VOICE=Olivia          # default: Olivia
 export POLLY_ENGINE=neural         # default: neural
