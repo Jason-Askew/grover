@@ -16,6 +16,14 @@ const POLLY_REGION = process.env.AWS_REGION || 'ap-southeast-2';
 const POLLY_VOICE = process.env.POLLY_VOICE || 'Olivia';
 const POLLY_ENGINE = process.env.POLLY_ENGINE || 'neural';
 
+// Keycloak OIDC — set KEYCLOAK_URL to enable authentication (empty = disabled)
+const KEYCLOAK_URL = process.env.KEYCLOAK_URL || '';
+const KEYCLOAK_REALM = process.env.KEYCLOAK_REALM || 'grover';
+const KEYCLOAK_CLIENT_ID = process.env.KEYCLOAK_CLIENT_ID || 'grover-web';
+const AUTH_SESSION_TTL = parseInt(process.env.AUTH_SESSION_TTL, 10) || 86400000; // 24h
+const KEYCLOAK_ADMIN_USER = process.env.KEYCLOAK_ADMIN_USER || 'admin';
+const KEYCLOAK_ADMIN_PASSWORD = process.env.KEYCLOAK_ADMIN_PASSWORD || 'admin';
+
 function resolveIndex(name) {
   const indexDir = path.join(INDEX_DIR, name);
   return {
@@ -55,5 +63,7 @@ function listIndexes() {
 module.exports = {
   DOCS_DIR, INDEX_DIR, META_FILE, EMBEDDINGS_FILE, GRAPH_FILE, MEMORY_FILE,
   LLM_API_KEY, LLM_BASE_URL, LLM_MODEL, POLLY_REGION, POLLY_VOICE, POLLY_ENGINE,
+  KEYCLOAK_URL, KEYCLOAK_REALM, KEYCLOAK_CLIENT_ID, AUTH_SESSION_TTL,
+  KEYCLOAK_ADMIN_USER, KEYCLOAK_ADMIN_PASSWORD,
   resolveIndex, listIndexes,
 };

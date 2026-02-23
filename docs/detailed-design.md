@@ -5,10 +5,11 @@
 ### 1.1 Directory Structure
 
 ```
-search.js                          CLI dispatcher (53 lines)
+grover.js                          CLI dispatcher (77 lines)
 src/
-├── config.js                      File paths, env vars, LLM config
-├── domain-constants.js            Financial domain vocabulary
+├── config.js                      File paths, env vars, LLM config, Keycloak config
+├── domain-constants.js            Westpac financial domain vocabulary
+├── domain-constants-sa.js         Services Australia domain vocabulary (33 categories)
 ├── utils/
 │   ├── math.js                    Shared cosine similarity
 │   ├── pdf.js                     PDF text extraction + page-aware chunking
@@ -18,10 +19,12 @@ src/
 │   ├── file-discovery.js          Recursive file finder (PDF + Markdown)
 │   └── formatting.js              Result + context formatters
 ├── graph/
-│   ├── entity-extraction.js       Domain entity + document metadata extraction
+│   ├── entity-extraction.js       Domain entity extraction, category inference from filenames
 │   └── knowledge-graph.js         KnowledgeGraph class (nodes, edges, traversal)
 ├── memory/
-│   └── conversation-memory.js     ConversationMemory class (persist, recall, SONA)
+│   ├── conversation-memory.js     ConversationMemory class (persist, recall, SONA, feedback)
+│   ├── chat-manager.js            ChatManager class (per-user multi-chat isolation)
+│   └── feedback-index.js          FeedbackIndex class (content-keyed shared quality scores)
 ├── persistence/
 │   └── index-persistence.js       Binary embedding + JSON metadata save/load
 ├── retrieval/
@@ -30,17 +33,24 @@ src/
 ├── llm/
 │   ├── client.js                  OpenAI-compatible HTTP client (streaming + non-streaming)
 │   ├── query-rewrite.js           Follow-up query expansion via LLM
-│   └── rag.js                     RAG answer generation with memory integration
+│   ├── rag.js                     RAG answer generation with memory + feedback integration
+│   └── usage-tracker.js           UsageTracker class (per-user/model token + cost tracking)
 ├── server/
 │   ├── viz-builder.js             Graph-to-visualization data transformer
-│   └── chat-panel.html            Injected chat panel (HTML/CSS/JS)
+│   ├── viz-path.js                Citation subgraph extraction for path highlighting
+│   ├── chat-panel.html            Injected chat panel (HTML/CSS/JS)
+│   ├── login-overlay.html         Keycloak OIDC login overlay (PKCE flow)
+│   ├── auth-callback.html         OIDC callback page
+│   ├── auth.js                    Keycloak OIDC validation, sessions, auth middleware
+│   ├── admin-api.js               Admin routes (user CRUD, usage stats)
+│   └── admin-panel.html           Admin panel HTML page
 └── commands/
     ├── ingest.js                  Full PDF ingestion pipeline
     ├── update.js                  Incremental index update (add/modify/delete)
     ├── search.js                  CLI search command
     ├── ask.js                     Single-query RAG command
     ├── interactive.js             REPL mode with full command set
-    ├── serve.js                   HTTP server with graph viz + chat
+    ├── serve.js                   HTTP server with graph viz + chat + auth + admin
     └── stats.js                   Index statistics reporter
 ```
 
@@ -49,16 +59,20 @@ src/
 Dependencies flow strictly downward. No circular imports exist.
 
 ```
-Layer 0: config.js, domain-constants.js
+Layer 0: config.js, domain-constants.js, domain-constants-sa.js
     ▲
 Layer 1: utils/math, utils/pdf, utils/file-discovery, utils/formatting
     ▲
-Layer 2: graph/entity-extraction, graph/knowledge-graph, memory/conversation-memory
+Layer 2: graph/entity-extraction, graph/knowledge-graph,
+         memory/conversation-memory, memory/feedback-index, memory/chat-manager
     ▲
 Layer 3: persistence/index-persistence, retrieval/vector-search,
-         llm/client, llm/query-rewrite, llm/rag, retrieval/retrieve
+         llm/client, llm/query-rewrite, llm/rag, llm/usage-tracker,
+         retrieval/retrieve
     ▲
-Layer 4: commands/*, server/viz-builder
+Layer 4: server/auth, server/admin-api, server/viz-builder, server/viz-path
+    ▲
+Layer 5: commands/*
 ```
 
 **Rules enforced:**
@@ -67,6 +81,8 @@ Layer 4: commands/*, server/viz-builder
 - `persistence/` depends on `graph/` (for `KnowledgeGraph.fromJSON`)
 - `llm/` depends on config + `utils/formatting` only
 - `retrieval/` depends on `llm/query-rewrite` + `retrieval/vector-search`
+- `server/auth` depends only on `config` + `jose` (lazy-loaded)
+- `server/admin-api` depends on `server/auth` + `config`
 - `commands/` depend on everything above, never on each other (except `update` imports `ingest` as fallback)
 
 ---
@@ -75,20 +91,31 @@ Layer 4: commands/*, server/viz-builder
 
 ### 2.1 `src/config.js`
 
-Centralizes all file paths and environment variable reading.
+Centralizes all file paths, environment variable reading, and Keycloak configuration.
 
 | Export | Type | Description |
 |--------|------|-------------|
 | `PROJECT_ROOT` | `string` | Absolute path to project root (resolved from `__dirname`) |
 | `DOCS_DIR` | `string` | Absolute path to source document directory (`<PROJECT_ROOT>/corpus`) |
 | `INDEX_DIR` | `string` | Absolute path to generated index directory (`<PROJECT_ROOT>/index`) |
-| `META_FILE` | `string` | `./index/metadata.json` |
-| `EMBEDDINGS_FILE` | `string` | `./index/embeddings.bin` |
-| `GRAPH_FILE` | `string` | `./index/graph.json` |
-| `MEMORY_FILE` | `string` | `./index/memory.json` |
+| `META_FILE` | `string` | `<INDEX_DIR>/metadata.json` |
+| `EMBEDDINGS_FILE` | `string` | `<INDEX_DIR>/embeddings.bin` |
+| `GRAPH_FILE` | `string` | `<INDEX_DIR>/graph.json` |
+| `MEMORY_FILE` | `string` | `<INDEX_DIR>/memory.json` |
 | `LLM_API_KEY` | `string` | `OPENAI_API_KEY` env var |
 | `LLM_BASE_URL` | `string` | `OPENAI_BASE_URL` env var (default: OpenAI) |
 | `LLM_MODEL` | `string` | `LLM_MODEL` env var (default: `gpt-4o-mini`) |
+| `POLLY_REGION` | `string` | `AWS_REGION` env var (default: `ap-southeast-2`) |
+| `POLLY_VOICE` | `string` | `POLLY_VOICE` env var (default: `Olivia`) |
+| `POLLY_ENGINE` | `string` | `POLLY_ENGINE` env var (default: `neural`) |
+| `KEYCLOAK_URL` | `string` | `KEYCLOAK_URL` env var (empty = auth disabled) |
+| `KEYCLOAK_REALM` | `string` | `KEYCLOAK_REALM` env var (default: `grover`) |
+| `KEYCLOAK_CLIENT_ID` | `string` | `KEYCLOAK_CLIENT_ID` env var (default: `grover-web`) |
+| `AUTH_SESSION_TTL` | `number` | `AUTH_SESSION_TTL` env var (default: `86400000` / 24h) |
+| `KEYCLOAK_ADMIN_USER` | `string` | `KEYCLOAK_ADMIN_USER` env var (default: `admin`) |
+| `KEYCLOAK_ADMIN_PASSWORD` | `string` | `KEYCLOAK_ADMIN_PASSWORD` env var (default: `admin`) |
+| `resolveIndex(name)` | `function` | Returns paths for a named index subdirectory |
+| `listIndexes()` | `function` | Returns available index names (scans `INDEX_DIR`) |
 
 ### 2.2 `src/domain-constants.js`
 
@@ -100,6 +127,17 @@ Financial domain vocabulary used for entity extraction.
 | `FINANCIAL_CONCEPTS` | `string[]` | 33 | margin call, settlement, hedging, break costs |
 | `BRANDS` | `Object` | 4 | `{ wbc: 'Westpac', sgb: 'St.George Bank', ... }` |
 | `CATEGORIES` | `Object` | 4 | `{ fx: 'Foreign Exchange', irrm: 'Interest Rate Risk Management', ... }` |
+
+### 2.2a `src/domain-constants-sa.js`
+
+Services Australia domain vocabulary.
+
+| Export | Type | Count | Examples |
+|--------|------|-------|---------|
+| `PAYMENT_TYPES` | `string[]` | ~55 | age pension, jobseeker payment, medicare card |
+| `GOVERNMENT_CONCEPTS` | `string[]` | ~74 | income test, waiting period, mutual obligation |
+| `SA_BRANDS` | `Object` | 0 | `{}` — SA uses categories-only (no brand nodes) |
+| `SA_CATEGORIES` | `Object` | 33 | `{ payments: 'Payments', centrelink: 'Centrelink', ... }` |
 
 ### 2.3 `src/utils/math.js`
 
@@ -115,7 +153,7 @@ Returns the cosine similarity in the range [-1, 1]. Uses epsilon `1e-8` to avoid
 
 | Function | Signature | Description |
 |----------|-----------|-------------|
-| `extractPdfText` | `(filePath: string) → { numPages, pages[] }` | Invokes Python/pymupdf via `child_process.execSync`. Returns per-page text. Max buffer: 50MB. |
+| `extractPdfText` | `(filePath: string) → { numPages, pages[] }` | Invokes Python/pymupdf via `child_process.execFileSync`. Returns per-page text. Max buffer: 50MB. |
 | `chunkPages` | `(pages[], maxChars?, overlap?) → chunk[]` | Page-aware text chunking. Default 1000 chars with 200-char overlap. Breaks at paragraph > newline > sentence boundaries. Minimum chunk size: 20 chars. Returns `{ text, pageStart, pageEnd }`. |
 
 ### 2.5 `src/utils/markdown.js`
@@ -160,8 +198,10 @@ Generic recursive file finder with extension filter, skipping hidden directories
 
 | Function | Signature | Description |
 |----------|-----------|-------------|
-| `extractEntities` | `(text: string) → string[]` | Uses pre-compiled word-boundary regular expressions for case-insensitive matching against domain vocabularies (Westpac or Services Australia). Returns prefixed IDs: `product:forward contract`, `concept:margin call`. Patterns are compiled once at module load via `compilePatterns()`. |
-| `extractDocMeta` | `(filePath: string) → { brand, brandName, category, categoryName }` | Extracts brand and category from file path segments by matching against `BRANDS` and `CATEGORIES` keys. |
+| `extractEntities` | `(text: string, domain?: string) → string[]` | Uses pre-compiled word-boundary regular expressions for case-insensitive matching against domain vocabularies (Westpac or Services Australia). Returns prefixed IDs: `product:forward contract`, `concept:margin call`. Patterns are compiled once at module load via `compilePatterns()`. |
+| `extractDocMeta` | `(filePath: string, domain?: string) → { brand, brandName, category, categoryName }` | Extracts brand and category from file path segments. For docs in `general/`, calls `inferCategoryFromFilename()` to attempt reclassification. |
+| `inferCategoryFromFilename` | `(filename: string) → string \| null` | 4-tier category inference: (1) form codes, (2) language/translation names, (3) keyword rules (~40 ordered rules), (4) medical condition patterns. Returns category key or null. |
+| `DOMAINS` | `Object` | Compiled pattern sets for both domains, keyed by domain name. |
 
 ### 2.8 `src/graph/knowledge-graph.js`
 
@@ -192,38 +232,84 @@ The `KnowledgeGraph` class (303 lines) is the largest module. It maintains four 
 | Method | Description |
 |--------|-------------|
 | `buildFromRecords(records)` | Constructs full graph from ingested chunk records. Creates brand/category/document/chunk/entity nodes and all edge types. Uses representative sampling (first/middle/last chunk per doc) for cross-document similarity. |
-| `expandResults(vectorResults, allRecords, k)` | Graph-enhanced search. For each vector result, traverses 2 hops to find related chunks. Returns combined results scored as `vectorScore - (graphScore * 0.15)` plus a traversal path for visualization. |
+| `expandResults(vectorResults, allRecords, k)` | Graph-enhanced search. For each vector result, traverses 2 hops to find related chunks. Returns combined results scored as `vectorScore - (graphScore * 0.15)` plus a traversal path for visualization. Uses O(1) `Map<id, record>` lookup. |
 | `getNeighbors(id, edgeType?, maxDepth?)` | Depth-limited BFS traversal. Returns `{id, type, weight, depth}` for each neighbor. |
 | `toJSON()` / `fromJSON(data)` | Serialization via Map-to-array conversion. |
 
 ### 2.9 `src/memory/conversation-memory.js`
 
-The `ConversationMemory` class (117 lines) provides persistent Q&A memory.
+The `ConversationMemory` class (~208 lines) provides persistent Q&A memory with feedback integration.
 
 **Storage:**
-- `memories[]` — Full Q&A records with embeddings, stored as JSON arrays in `memory.json`. Capped at `MAX_MEMORIES = 200` with oldest-first eviction.
+- `memories[]` — Full Q&A records with embeddings, quality scores, and feedback. Capped at `MAX_MEMORIES = 200` with oldest-first eviction.
 - `history[]` — Last 100 role/content messages for LLM context window
 - `ReasoningBank` — In-memory embedding store (rebuilt on load from persisted embeddings)
 - `SonaCoordinator` — Trajectory recording for pattern learning
 - `_cachedEmbedding` — Per-memory Float32Array cache, computed on load/store, excluded from serialization
 
+**Constructor options:**
+- `paths` — index paths for default memory file location
+- `opts.userId` — user ID for per-user memory directories
+- `opts.feedbackIndex` — shared `FeedbackIndex` instance for cross-user quality
+- `opts.memoryFile` — explicit memory file override (used by `ChatManager` for per-chat files)
+
 **Methods:**
 
 | Method | Description |
 |--------|-------------|
-| `load()` | Reads `memory.json`, rebuilds ReasoningBank from stored embeddings, caches Float32Arrays. Idempotent (skips if already loaded). |
-| `save()` | Writes current state to `memory.json`. Strips `_cachedEmbedding` fields, converts Float32Arrays to regular arrays. |
-| `store(query, answer, sources, queryEmbedding)` | Stores a new Q&A interaction. Enforces `MAX_MEMORIES` cap. Records SONA trajectory with retrieval and generation steps. Auto-saves. |
-| `findRelevant(queryEmbedding, k?)` | Returns top-k past interactions with cosine similarity > 0.5. Uses cached Float32Arrays and shared `cosineSim` from `utils/math`. |
+| `load()` | Reads memory file, rebuilds ReasoningBank from stored embeddings, caches Float32Arrays. Idempotent (skips if already loaded). |
+| `save()` | Writes current state to memory file. Strips `_cachedEmbedding` fields, converts Float32Arrays to regular arrays. |
+| `store(query, answer, sources, queryEmbedding)` | Stores a new Q&A interaction with unique ID (includes userId prefix). Enforces `MAX_MEMORIES` cap. Records SONA trajectory with retrieval and generation steps. Auto-saves. Returns memoryId. |
+| `recordFeedback(memoryId, type, category?, comment?)` | Records feedback on a memory entry. Updates quality score, writes to shared feedback index, records SONA trajectory. Returns new quality score. |
+| `findRelevant(queryEmbedding, k?)` | Returns top-k past interactions with `(cosine similarity × quality) > 0.5`. Quality is `min(per-memory quality, shared feedback index quality)`. Uses cached Float32Arrays and shared `cosineSim` from `utils/math`. |
 | `getRecentHistory(n?)` | Returns last `n` messages from conversation history. |
 | `stats()` | Returns memory and SONA statistics. |
+
+### 2.9a `src/memory/chat-manager.js`
+
+The `ChatManager` class (~197 lines) provides per-user multi-chat isolation.
+
+**Storage:**
+- `_meta` — `{ chats: [{id, title, createdAt, lastActivityAt}], activeChatId }` persisted to `chats.json`
+- `_memoryCache` — `Map<chatId, ConversationMemory>` for lazy-loaded memory instances
+
+**Methods:**
+
+| Method | Description |
+|--------|-------------|
+| `load()` | Reads `chats.json`, migrates legacy `memory.json` if no chats exist, ensures at least one chat. |
+| `save()` | Writes `chats.json` metadata. |
+| `listChats()` | Returns all chats sorted by `lastActivityAt` descending. |
+| `createChat()` | Creates a new chat with random ID, sets it as active. |
+| `deleteChat(chatId)` | Deletes chat metadata and memory file. Validates chatId format to prevent path traversal. Switches active chat if needed. |
+| `getMemory(chatId)` | Returns `ConversationMemory` for a specific chat (lazy-loaded, cached). |
+| `getActiveMemory()` | Shortcut for `getMemory(activeChatId)`. |
+| `autoTitle(chatId, query)` | Sets chat title from first query (truncated to 50 chars). |
+| `renameChat(chatId, title)` | Renames a chat. |
+| `touchChat(chatId)` | Updates `lastActivityAt` timestamp. |
+
+### 2.9b `src/memory/feedback-index.js`
+
+The `FeedbackIndex` class (~95 lines) provides a content-keyed shared quality index.
+
+**Storage:** `feedback-index.json` — `{ [contentKey]: { quality, feedbacks[] } }`
+
+**Methods:**
+
+| Method | Description |
+|--------|-------------|
+| `computeKey(query, sources)` | SHA-256 hash of `query + sorted source files`, truncated to 16 hex chars. |
+| `record(key, type, category, comment, userId, query)` | Records feedback. Positive feedback doesn't degrade quality. Negative feedback sets quality to `min(current, category-based value)`. |
+| `getQuality(key)` | Returns shared quality score for a content key, or null if unknown. |
+| `stats()` | Returns entry count. |
 
 ### 2.10 `src/persistence/index-persistence.js`
 
 | Function | Description |
 |----------|-------------|
-| `saveIndex(records, dim, graph)` | Writes metadata as JSON, embeddings as raw Float32 binary, graph as JSON. Creates `./index/` if needed. |
+| `saveIndex(records, dim, graph)` | Writes metadata as JSON, embeddings as raw Float32 binary, graph as JSON. Creates index directory if needed. |
 | `loadIndex()` | Reads metadata + binary embeddings, reconstructs Float32Arrays, deserializes graph via `KnowledgeGraph.fromJSON`. Returns `{ dim, records, graph }` or `null`. |
+| `loadIndexWithFallback(paths, indexName)` | Loads with paths, falls back to legacy root index if indexName is `Westpac`. |
 
 **Binary format:** Embeddings are stored as a flat `Float32LE` buffer. Record `i`, dimension `j` is at byte offset `(i * dim + j) * 4`. For 6,220 records at 384 dimensions, this produces a ~9.1 MB file.
 
@@ -238,7 +324,7 @@ Brute-force cosine distance search. Computes query norm once, then iterates all 
 ### 2.12 `src/retrieval/retrieve.js`
 
 ```
-retrieve(query, index, { k?, graphMode?, memory? }) → { results, path, mode }
+retrieve(query, index, { k?, graphMode?, memory? }) → { results, path, mode, queryVec }
 ```
 
 Orchestrates the full retrieval pipeline:
@@ -246,15 +332,20 @@ Orchestrates the full retrieval pipeline:
 2. Embeds query via ONNX
 3. Runs `vectorSearch` (over-fetches to `max(k, 10)` if graph mode active)
 4. If graph available, runs `expandResults` for graph-boosted ranking
-5. Returns results, graph traversal path (for viz), and mode label
+5. Returns results, graph traversal path (for viz), mode label, and `queryVec` (to avoid re-embedding in RAG)
 
 ### 2.13 `src/llm/client.js`
 
-```
-callLLM(messages, { stream? }) → string
-```
+Shared HTTP client for OpenAI-compatible APIs with streaming support.
 
-Sends chat completion request to OpenAI-compatible API. In streaming mode, writes tokens to stdout in real-time and returns the full response. In non-streaming mode, returns the response body directly. Parameters: temperature 0.2, max_tokens 2048.
+| Function | Description |
+|----------|-------------|
+| `fetchLLM(messages, stream)` | Builds fetch request with AbortController timeout (60s). Includes `stream_options: { include_usage: true }` when streaming. |
+| `streamSSE(response, onToken)` | Parses SSE stream, extracts tokens and usage data. Returns `{ content, usage }`. |
+| `callLLM(messages, { stream? })` | For CLI use. In streaming mode, writes tokens to stdout. Returns `{ content, usage }`. |
+| `callLLMStream(messages, onToken)` | For server use. Delegates tokens to callback. Returns `{ content, usage }`. |
+
+Parameters: temperature 0.2, max_tokens 2048, 60s timeout via AbortController.
 
 ### 2.14 `src/llm/query-rewrite.js`
 
@@ -267,26 +358,37 @@ Detects follow-up queries (short queries or those starting with referential lang
 ### 2.15 `src/llm/rag.js`
 
 ```
-ragAnswer(query, results, memory?, { stream?, domain? }) → { answer, sources }
-ragAnswerStream(query, results, memory?, res, { domain? }) → void
+ragAnswer(query, results, memory?, { stream?, queryVec?, domain? }) → { answer, sources, memoryId, usage }
+ragAnswerStream(query, results, memory, onToken, { queryVec?, domain? }) → { answer, sources, memoryId, usage }
 getSystemPrompt(domain) → string
 ```
 
-Central RAG function used by both CLI and web server. Supports domain-aware system prompts via the `domain` parameter.
+Central RAG module used by both CLI and web server. Supports domain-aware system prompts via the `domain` parameter.
 
 **Domain prompts:**
 - `Westpac` — Financial products, regulatory guidance, risk management (default)
 - `ServicesAustralia` — Government payments, eligibility criteria, entitlements
 
-The `getSystemPrompt(domain)` function selects the appropriate domain context and appends shared RAG rules (cite sources, acknowledge uncertainty, etc.).
+Shared helpers:
+- `buildRagContext()` — constructs messages array with system prompt, history, memory context, and feedback annotations
+- `buildSourcesSummary()` — formats results into source metadata
 
-| Function | Behavior |
-|----------|----------|
-| `ragAnswer` (stream: true) | Prints sources summary, past interactions, and LLM tokens to stdout. Used by CLI commands. |
-| `ragAnswer` (stream: false) | Silent operation. Returns `{ answer, sources }` for JSON API responses. |
-| `ragAnswerStream` | Streams tokens via SSE to an HTTP response object. Detects client disconnects. Used by web server. |
+All modes store the interaction in memory (if available) and return `{ answer, sources, memoryId, usage }`. When past interactions had negative feedback, the annotation "avoid repeating same issues" is included in the LLM context.
 
-All modes store the interaction in memory and return the same `{ answer, sources }` structure.
+### 2.15a `src/llm/usage-tracker.js`
+
+The `UsageTracker` class (~99 lines) provides per-user and per-model token counting with cost estimation.
+
+**Storage:** `usage-stats.json` — `{ totals, byUser, byModel, recent[] }`
+
+**Methods:**
+
+| Method | Description |
+|--------|-------------|
+| `record(userId, model, usage)` | Accumulates prompt/completion tokens and estimated cost. Logs to console. Persists to disk. Keeps last 100 recent entries. |
+| `getStats()` | Returns `{ totals, byUser, byModel, recent }`. |
+
+Cost estimation uses built-in pricing for gpt-4o-mini, gpt-4o, gpt-4-turbo, or custom pricing via `LLM_COST_PER_1K_INPUT` / `LLM_COST_PER_1K_OUTPUT` env vars.
 
 ### 2.16 `src/server/viz-builder.js`
 
@@ -298,18 +400,65 @@ Transforms the internal knowledge graph into a visualization-friendly format:
 - Excludes chunk nodes (too numerous for visualization)
 - Collapses chunk-to-entity edges to document-to-entity edges
 - Limits entity mention edges to top 3 per entity by accumulated weight
+- Limits similarity edges to top 3 per document
 - Prunes orphan entity/concept nodes with no edges
 - Adds `chunkCount` to document nodes and `degree` to entity nodes
 
-### 2.17 `src/server/chat-panel.html`
+**Additional processing:**
+- **Retroactive category inference**: reassigns documents classified as `general` to inferred categories via `inferCategoryFromFilename()`
+- **Brand/category deduplication**: merges legacy brand nodes that duplicate category nodes (for SA graphs where `SA_BRANDS` was emptied after initial ingestion)
+- **Hub suppression**: skips `category:general` if it still has >50 docs after inference
 
-A self-contained HTML fragment (265 lines) containing CSS styles, HTML markup, and JavaScript for the chat panel. Injected into `graph-viz.html` at serve time via string replacement. Features:
+### 2.16a `src/server/viz-path.js`
+
+```
+buildCitedVizPath(graph, sources, vizData) → { nodes[], edges[] } | null
+```
+
+Extracts the subgraph of nodes and edges connected to cited source documents, for highlighting in the visualization. Includes:
+1. Direct brand/category/product/concept connections from the raw graph
+2. Doc-to-doc relationships (semantically_similar, shared_concept) from viz data
+3. Shared entities connected to 2+ cited documents
+4. Deduplicates edges by `source|target|type` key
+
+### 2.17 `src/server/auth.js`
+
+Keycloak OIDC authentication module (~287 lines). Lazy-loads `jose` for JWT/JWKS operations.
+
+| Function | Description |
+|----------|-------------|
+| `getAuthConfig()` | Returns auth config from env vars, or null if `KEYCLOAK_URL` is not set. Computes all OIDC endpoint URLs. |
+| `validateIdToken(idToken, config)` | Validates JWT against Keycloak's JWKS endpoint. Returns `{ sub, email, name, roles }`. |
+| `createSession(userId, email, name, roles, ttl)` | Creates an in-memory session with random UUID. Returns session ID. |
+| `getSession(req)` | Looks up session from `grover_session` cookie. Checks TTL. Returns user object or null. |
+| `requireAuth(req, res, config)` | Middleware: returns user object, or sends 401 and returns null. When auth is disabled, returns anonymous user. |
+| `requireAdmin(req, res, config)` | Middleware: checks for `admin` role. Returns user or sends 401/403. When auth is disabled, returns 403. |
+| `handleAuthRoute(req, res, config)` | Route handler for `/auth/callback`, `/api/auth/session`, `/api/auth/logout`, `/api/auth/me`. |
+
+Sessions are stored in-memory (cleared on restart). Cookie: `grover_session`, HttpOnly, SameSite=Lax.
+
+### 2.17a `src/server/admin-api.js`
+
+Admin panel routes (~246 lines). Proxies user management operations to the Keycloak Admin REST API.
+
+| Function | Description |
+|----------|-------------|
+| `handleAdminRoute(req, res, config, readBody, usageTracker)` | Route handler for all `/admin` and `/api/admin/*` routes. All routes require `admin` role. |
+
+Uses a cached admin access token obtained via password grant from Keycloak's master realm. Token auto-refreshes 30s before expiry.
+
+### 2.18 `src/server/chat-panel.html`
+
+A self-contained HTML fragment containing CSS styles, HTML markup, and JavaScript for the chat panel. Injected into `graph-viz.html` at serve time via string replacement. Features:
 - Message rendering with markdown-like formatting
 - Source citation click-to-focus (delegates to graph-viz.html's `focusNode`)
 - Graph path highlighting on query response
+- Multi-chat sidebar (create, switch, rename, delete)
+- Feedback buttons (thumbs up/down with categorization modal)
 - Memory clear via `/api/forget`
+- User session display and logout button (when auth enabled)
 
-### 2.18 Command Modules (`src/commands/`)
+### 2.19 Command Modules (`src/commands/`)
 
 | Command | Lines | Description |
 |---------|-------|-------------|
@@ -318,7 +467,7 @@ A self-contained HTML fragment (265 lines) containing CSS styles, HTML markup, a
 | `search.js` | 20 | Loads index, calls `retrieve`, prints formatted results |
 | `ask.js` | 27 | Loads index + memory, calls `retrieve` + `ragAnswer` with streaming and domain parameter |
 | `interactive.js` | 184 | Full REPL with flags (`--flat`, `--k N`, `--search`, `--related`, `--entities`, `--memory`, `--forget`) |
-| `serve.js` | ~170 | HTTP server with graceful shutdown (SIGTERM/SIGINT). SSE streaming with client disconnect detection. Domain-aware RAG. |
+| `serve.js` | ~400 | HTTP server with auth, admin, chat management, feedback, TTS, SSE streaming, graceful shutdown. Manages per-user ChatManagers and UsageTracker. |
 | `stats.js` | 65 | Reads index/graph/memory and prints statistics with debug logging |
 
 ---
@@ -364,29 +513,98 @@ Serialized Maps as arrays of `[key, value]` pairs:
 }
 ```
 
-### 3.4 `memory.json`
+### 3.4 `chats.json`
 
+Per-user (or per-index for anonymous) chat metadata:
+```json
+{
+  "chats": [
+    {
+      "id": "chat-a1b2c3d4e5f6",
+      "title": "JobSeeker eligibility requirements",
+      "createdAt": "2025-01-01T00:00:00.000Z",
+      "lastActivityAt": "2025-01-01T01:00:00.000Z"
+    }
+  ],
+  "activeChatId": "chat-a1b2c3d4e5f6"
+}
+```
+
+Each chat's conversation memory is stored in a separate file: `chat-<chatId>.json` (same format as legacy `memory.json`).
+
+### 3.5 `feedback-index.json`
+
+```json
+{
+  "a1b2c3d4e5f6g7h8": {
+    "quality": 0.3,
+    "feedbacks": [
+      {
+        "type": "negative",
+        "category": "wrong-answer-right-docs",
+        "comment": "The answer confused two different payments",
+        "userId": "user-123",
+        "query": "What is the income test for JobSeeker?",
+        "timestamp": "2025-01-01T00:00:00.000Z"
+      }
+    ]
+  }
+}
+```
+
+### 3.6 `usage-stats.json`
+
+```json
+{
+  "totals": {
+    "promptTokens": 15000,
+    "completionTokens": 5000,
+    "totalTokens": 20000,
+    "requests": 50,
+    "estimatedCost": 0.0075
+  },
+  "byUser": {
+    "user-123": { "promptTokens": 10000, "completionTokens": 3000, "totalTokens": 13000, "requests": 30, "estimatedCost": 0.005 }
+  },
+  "byModel": {
+    "gpt-4o-mini": { "promptTokens": 15000, "completionTokens": 5000, "totalTokens": 20000, "requests": 50, "estimatedCost": 0.0075 }
+  },
+  "recent": [
+    { "timestamp": "2025-01-01T00:00:00.000Z", "userId": "user-123", "model": "gpt-4o-mini", "promptTokens": 300, "completionTokens": 100, "cost": 0.0001 }
+  ]
+}
+```
+
+### 3.7 Per-chat memory file (`chat-<chatId>.json`)
+
+Same format as legacy `memory.json`, with added feedback fields:
 ```json
 {
   "history": [
     {"role": "user", "content": "...", "timestamp": "2025-01-01T00:00:00.000Z"},
-    {"role": "assistant", "content": "...", "timestamp": "2025-01-01T00:00:00.000Z"}
+    {"role": "assistant", "content": "...", "timestamp": "2025-01-01T00:00:00.000Z", "sources": [...], "memoryId": "mem-..."}
   ],
   "memories": [
     {
-      "id": "mem-1700000000000",
+      "id": "mem-user123-1700000000000",
       "query": "What is a forward contract?",
       "answer": "A forward contract is...",
       "sources": [{"file": "...", "pageStart": 1, "pageEnd": 2, "score": 0.85}],
       "embedding": [0.1, 0.2, ...],
       "timestamp": "2025-01-01T00:00:00.000Z",
-      "quality": 1.0
+      "quality": 1.0,
+      "feedback": {
+        "type": "positive",
+        "category": null,
+        "comment": null,
+        "timestamp": "2025-01-01T00:01:00.000Z"
+      }
     }
   ]
 }
 ```
 
-### 3.5 `/api/ask` Response
+### 3.8 `/api/ask` Response
 
 ```json
 {
@@ -398,7 +616,8 @@ Serialized Maps as arrays of `[key, value]` pairs:
     "nodes": ["doc:Westpac/wbc/fx/WBC-FXSwapPDS.pdf", "brand:wbc", "category:fx"],
     "edges": [{"source": "doc:...", "target": "brand:wbc", "type": "belongs_to_brand"}]
   },
-  "mode": "vector+graph"
+  "mode": "vector+graph",
+  "memoryId": "mem-user123-1700000000000"
 }
 ```
 
@@ -424,6 +643,15 @@ combinedScore = vectorScore - (graphScore * 0.15)
 
 The graph boost lowers the effective distance, promoting results that are both semantically similar and structurally connected through shared entities or documents.
 
+### 4.4 Memory Relevance Score
+
+```
+memoryScore = cosineSimilarity(queryEmbedding, pastQueryEmbedding) × quality
+quality = min(perMemoryQuality, sharedFeedbackQuality)
+```
+
+Only past interactions with `memoryScore > 0.5` are included in RAG context.
+
 ---
 
 ## 5. Refactoring Decisions
@@ -435,18 +663,22 @@ The graph boost lowers the effective distance, promoting results that are both s
 | Cosine similarity | Inline in `ConversationMemory.findRelevant` (6 lines) + standalone `cosineSim` (8 lines) | Single `cosineSim` in `utils/math.js`, imported by both |
 | RAG logic in serve | `/api/ask` handler duplicated ~25 lines of context-building, LLM calling, and memory storing from `ragAnswer` | `ragAnswer(query, results, memory, { stream: false })` — one call, returns `{ answer, sources }` |
 | Chat panel HTML | 265-line template string embedded in JS | Separate `chat-panel.html` file, loaded with `fs.readFileSync` |
+| Viz path building | Identical logic in `/api/ask` and `/api/ask-stream` | Shared `buildCitedVizPath()` in `src/server/viz-path.js` |
+| SSE parsing | ~95% identical code in `callLLM` and `callLLMStream` | Shared `streamSSE(response, onToken)` helper |
+| RAG message building | Duplicated in `ragAnswer` and `ragAnswerStream` | Shared `buildRagContext()` helper |
+| Index loading | 3-line fallback pattern in 6 command files | `loadIndexWithFallback(paths, indexName)` in persistence module |
 
 ### 5.2 Module Size Distribution
 
-No module exceeds 303 lines (the KnowledgeGraph class, which is a single cohesive class). Most modules are under 150 lines:
+No module exceeds 400 lines (serve.js with all route handlers). Most modules are under 150 lines:
 
 | Range | Count | Modules |
 |-------|-------|---------|
 | 10-20 lines | 3 | math, chunking, search cmd |
-| 20-50 lines | 5 | domain-constants, formatting, entity-extraction, retrieve, ask cmd |
-| 50-120 lines | 8 | pdf, markdown, client, query-rewrite, rag, embed-batch, stats, conversation-memory |
-| 120-200 lines | 4 | config, ingest, update, serve, interactive |
-| 200-310 lines | 1 | knowledge-graph |
+| 20-50 lines | 5 | domain-constants, formatting, retrieve, ask cmd, viz-path |
+| 50-120 lines | 10 | pdf, markdown, client, query-rewrite, rag, embed-batch, stats, feedback-index, usage-tracker, entity-extraction |
+| 120-250 lines | 7 | config, ingest, update, interactive, conversation-memory, chat-manager, admin-api |
+| 250-400 lines | 3 | knowledge-graph, auth, serve |
 
 ---
 
@@ -507,3 +739,17 @@ When `GROVER_DEBUG=1`, the system logs additional diagnostic information:
 - **Cached Float32Arrays**: Embeddings loaded from JSON are cached as `Float32Array` on the memory object, avoiding repeated conversion during similarity search
 - **Streaming embeddings**: During ingestion, embeddings are written to binary temp files instead of accumulating in JS heap
 - **Absolute paths**: `config.js` uses `PROJECT_ROOT` for all paths, ensuring correct resolution regardless of working directory
+
+### 6.7 Category Inference and Graph Cleanup
+
+- **Filename-based inference**: 4-tier system (form codes, language detection, keyword rules, medical patterns) classifies documents into 33 SA categories
+- **Retroactive reassignment**: `viz-builder.js` reclassifies documents from `general` to inferred categories at serve time, even for graphs built before the inference logic existed
+- **Brand/category deduplication**: merges legacy brand nodes that duplicate category nodes (artifact of SA_BRANDS being emptied after initial ingestion)
+- **Hub suppression**: skips rendering `category:general` if it still has >50 documents after inference
+
+### 6.8 Feedback-Weighted Memory Retrieval
+
+Memory retrieval now weights cosine similarity by quality score:
+- `score = cosineSimilarity × min(perMemoryQuality, sharedFeedbackQuality)`
+- Negative feedback categories map to quality: wrong+wrong=0.1, wrong+right=0.3, right+wrong=0.5, incomplete=0.6
+- Past interactions with negative feedback include an annotation in the LLM context warning against repeating the same issues

@@ -1,0 +1,210 @@
+{
+  "c303ce2126ee8cae": {
+    "quality": 1,
+    "feedbacks": [
+      {
+        "type": "positive",
+        "category": null,
+        "comment": null,
+        "userId": "a82036b3-bacf-4638-a1c7-73f13279ad51",
+        "query": "What is the difference between a pension and an allowance?",
+        "timestamp": "2026-02-23T01:20:31.107Z"
+      }
+    ]
+  },
+  "7ab4d4f3730947c3": {
+    "quality": 1,
+    "feedbacks": [
+      {
+        "type": "positive",
+        "category": null,
+        "comment": null,
+        "userId": "a82036b3-bacf-4638-a1c7-73f13279ad51",
+        "query": "How does compensation affect my Centrelink payment?",
+        "timestamp": "2026-02-23T01:21:03.329Z"
+      }
+    ]
+  },
+  "f153b5e0ade47386": {
+    "quality": 1,
+    "feedbacks": [
+      {
+        "type": "positive",
+        "category": null,
+        "comment": null,
+        "userId": "a82036b3-bacf-4638-a1c7-73f13279ad51",
+        "query": "How do I prove my identity with Centrelink?",
+        "timestamp": "2026-02-23T01:21:05.771Z"
+      }
+    ]
+  },
+  "e7a74d5c867f67ed": {
+    "quality": 1,
+    "feedbacks": [
+      {
+        "type": "positive",
+        "category": null,
+        "comment": null,
+        "userId": "4c348898-d0fd-4cb7-b5ea-30e281845db3",
+        "query": "What aged care services are available?",
+        "timestamp": "2026-02-23T01:51:30.082Z"
+      }
+    ]
+  },
+  "c926bc3067ce9707": {
+    "quality": 1,
+    "feedbacks": [
+      {
+        "type": "positive",
+        "category": null,
+        "comment": null,
+        "userId": "4c348898-d0fd-4cb7-b5ea-30e281845db3",
+        "query": "What is a Home Care Package?",
+        "timestamp": "2026-02-23T01:51:32.969Z"
+      }
+    ]
+  },
+  "ad1dabd0778dc8ae": {
+    "quality": 1,
+    "feedbacks": [
+      {
+        "type": "positive",
+        "category": null,
+        "comment": null,
+        "userId": "4c348898-d0fd-4cb7-b5ea-30e281845db3",
+        "query": "How does the aged care means test work?",
+        "timestamp": "2026-02-23T01:51:45.179Z"
+      }
+    ]
+  },
+  "8eaa84f5182ae3d6": {
+    "quality": 1,
+    "feedbacks": [
+      {
+        "type": "positive",
+        "category": null,
+        "comment": null,
+        "userId": "4c348898-d0fd-4cb7-b5ea-30e281845db3",
+        "query": "Who can get JobSeeker Payment?",
+        "timestamp": "2026-02-23T01:53:05.243Z"
+      }
+    ]
+  },
+  "3edfe72231cd210a": {
+    "quality": 0.6,
+    "feedbacks": [
+      {
+        "type": "negative",
+        "category": "incomplete-answer",
+        "comment": "That's not enough money to live on",
+        "userId": "4c348898-d0fd-4cb7-b5ea-30e281845db3",
+        "query": "How much JobSeeker Payment can I get?",
+        "timestamp": "2026-02-23T01:53:36.353Z"
+      }
+    ]
+  },
+  "743756b3236e4611": {
+    "quality": 1,
+    "feedbacks": [
+      {
+        "type": "positive",
+        "category": null,
+        "comment": null,
+        "userId": "6751f114-85ae-4c9f-8cf2-347cded35357",
+        "query": "Who can get Family Tax Benefit?",
+        "timestamp": "2026-02-23T02:15:38.895Z"
+      }
+    ]
+  },
+  "828c04105419bd5e": {
+    "quality": 1,
+    "feedbacks": [
+      {
+        "type": "positive",
+        "category": null,
+        "comment": null,
+        "userId": "6751f114-85ae-4c9f-8cf2-347cded35357",
+        "query": "What is the difference between FTB Part A and Part B?",
+        "timestamp": "2026-02-23T02:15:41.618Z"
+      }
+    ]
+  },
+  "07b6589e0f9a1326": {
+    "quality": 1,
+    "feedbacks": [
+      {
+        "type": "positive",
+        "category": null,
+        "comment": null,
+        "userId": "6751f114-85ae-4c9f-8cf2-347cded35357",
+        "query": "How does the income test work for Family Tax Benefit Part A?",
+        "timestamp": "2026-02-23T02:15:44.327Z"
+      }
+    ]
+  },
+  "9168904977065e1c": {
+    "quality": 1,
+    "feedbacks": [
+      {
+        "type": "positive",
+        "category": null,
+        "comment": null,
+        "userId": "6751f114-85ae-4c9f-8cf2-347cded35357",
+        "query": "What about part b?",
+        "timestamp": "2026-02-23T02:15:46.935Z"
+      }
+    ]
+  },
+  "ca63ef87fc388df3": {
+    "quality": 1,
+    "feedbacks": [
+      {
+        "type": "positive",
+        "category": null,
+        "comment": null,
+        "userId": "6751f114-85ae-4c9f-8cf2-347cded35357",
+        "query": "What are the payment rates for Family Tax Benefit?",
+        "timestamp": "2026-02-23T02:15:50.147Z"
+      }
+    ]
+  },
+  "d4a35b3b29372c2a": {
+    "quality": 1,
+    "feedbacks": [
+      {
+        "type": "positive",
+        "category": null,
+        "comment": null,
+        "userId": "4c348898-d0fd-4cb7-b5ea-30e281845db3",
+        "query": "What is the qualifying age for Age Pension?",
+        "timestamp": "2026-02-23T02:41:46.650Z"
+      }
+    ]
+  },
+  "1c6e3307e5936973": {
+    "quality": 1,
+    "feedbacks": [
+      {
+        "type": "positive",
+        "category": null,
+        "comment": null,
+        "userId": "4c348898-d0fd-4cb7-b5ea-30e281845db3",
+        "query": "How does the income test work for Age Pension?",
+        "timestamp": "2026-02-23T02:41:59.383Z"
+      }
+    ]
+  },
+  "f63efec565a90e66": {
+    "quality": 1,
+    "feedbacks": [
+      {
+        "type": "positive",
+        "category": null,
+        "comment": null,
+        "userId": "4c348898-d0fd-4cb7-b5ea-30e281845db3",
+        "query": "How long can I be overseas before my Age Pension is affected?",
+        "timestamp": "2026-02-23T05:07:37.437Z"
+      }
+    ]
+  }
+}

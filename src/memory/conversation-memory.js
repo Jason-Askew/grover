@@ -1,4 +1,5 @@
 const fs = require('fs');
+const path = require('path');
 const { ReasoningBank, SonaCoordinator, TrajectoryBuilder } = require('@ruvector/ruvllm');
 const { INDEX_DIR, MEMORY_FILE, LLM_MODEL } = require('../config');
 const { cosineSim } = require('../utils/math');
@@ -6,14 +7,34 @@ const { cosineSim } = require('../utils/math');
 const MAX_MEMORIES = 200;
 
 class ConversationMemory {
-  constructor(paths = null) {
+  /**
+   * @param {object|null} paths - index paths (indexDir, memoryFile)
+   * @param {object} [opts] - { userId, feedbackIndex }
+   */
+  constructor(paths = null, opts = {}) {
     this.reasoningBank = new ReasoningBank();
     this.sona = new SonaCoordinator();
     this.history = [];
     this.memories = [];
     this.loaded = false;
-    this._indexDir = paths ? paths.indexDir : INDEX_DIR;
-    this._memoryFile = paths ? paths.memoryFile : MEMORY_FILE;
+    this._userId = opts.userId || null;
+    this._feedbackIndex = opts.feedbackIndex || null;
+
+    const baseIndexDir = paths ? paths.indexDir : INDEX_DIR;
+
+    if (opts.memoryFile) {
+      // Explicit memory file override (used by ChatManager for per-chat files)
+      this._memoryFile = opts.memoryFile;
+      this._indexDir = path.dirname(opts.memoryFile);
+    } else if (this._userId && this._userId !== '_anonymous') {
+      // Per-user memory directory
+      const userDir = path.join(baseIndexDir, 'users', this._userId);
+      this._indexDir = userDir;
+      this._memoryFile = path.join(userDir, 'memory.json');
+    } else {
+      this._indexDir = baseIndexDir;
+      this._memoryFile = paths ? paths.memoryFile : MEMORY_FILE;
+    }
   }
 
   load() {
@@ -51,12 +72,16 @@ class ConversationMemory {
   }
 
   async store(query, answer, sources, queryEmbedding) {
+    const idPrefix = this._userId && this._userId !== '_anonymous'
+      ? this._userId.slice(0, 8) + '-' : '';
     const memory = {
-      id: `mem-${Date.now()}`,
+      id: `mem-${idPrefix}${Date.now()}`,
       query,
-      answer: answer.slice(0, 2000),
-      sources: sources.map(s => ({
+      answer,
+      sources: sources.map((s, i) => ({
+        index: s.index || i + 1,
         file: s.file,
+        url: s.url || '',
         pageStart: s.pageStart,
         pageEnd: s.pageEnd,
         score: s.combinedScore ?? s.score ?? s.vectorScore ?? 0,
@@ -77,7 +102,10 @@ class ConversationMemory {
     this.reasoningBank.store('qa', queryEmbedding);
 
     this.history.push({ role: 'user', content: query, timestamp: memory.timestamp });
-    this.history.push({ role: 'assistant', content: answer.slice(0, 500), timestamp: memory.timestamp });
+    this.history.push({
+      role: 'assistant', content: answer, timestamp: memory.timestamp,
+      sources: memory.sources, memoryId: memory.id,
+    });
 
     const tb = new TrajectoryBuilder();
     const s1 = tb.startStep('retrieval', { query, sourcesCount: sources.length });
@@ -116,6 +144,12 @@ class ConversationMemory {
       mem.quality = 0.3;
     }
 
+    // Write to shared feedback index if available
+    if (this._feedbackIndex && mem.query && mem.sources) {
+      const key = this._feedbackIndex.computeKey(mem.query, mem.sources);
+      this._feedbackIndex.record(key, type, category, comment, this._userId, mem.query);
+    }
+
     // Record feedback trajectory in SONA for pattern learning
     const tb = new TrajectoryBuilder();
     const step = tb.startStep('feedback', { memoryId, type, category });
@@ -134,7 +168,17 @@ class ConversationMemory {
       const memEmb = mem._cachedEmbedding || (mem.embedding ? new Float32Array(mem.embedding) : null);
       if (!memEmb) return { index: i, score: 0 };
       const sim = cosineSim(queryEmbedding, memEmb);
-      const quality = mem.quality ?? 1.0;
+      let quality = mem.quality ?? 1.0;
+
+      // Check shared feedback index for cross-user quality signals
+      if (this._feedbackIndex && mem.query && mem.sources) {
+        const key = this._feedbackIndex.computeKey(mem.query, mem.sources);
+        const sharedQuality = this._feedbackIndex.getQuality(key);
+        if (sharedQuality !== null) {
+          quality = Math.min(quality, sharedQuality);
+        }
+      }
+
       return { index: i, score: sim * quality };
     });
 

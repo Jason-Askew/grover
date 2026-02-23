@@ -7,7 +7,7 @@ const { formatResult } = require('../utils/formatting');
 async function search(query, k = 5, graphMode = true, indexName = null) {
   const paths = indexName ? resolveIndex(indexName) : null;
   const index = loadIndexWithFallback(paths, indexName);
-  if (!index) { console.log('No index found. Run: node search.js ingest'); return; }
+  if (!index) { console.log('No index found. Run: node grover.js ingest'); return; }
 
   const hasGraph = !!index.graph;
   const label = indexName ? ` "${indexName}"` : '';

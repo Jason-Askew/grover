@@ -21,6 +21,7 @@
     font-size: 14px;
     font-weight: 600;
     color: #333;
+    margin: 0;
   }
   .chat-header button {
     background: none; border: none;
@@ -197,18 +198,51 @@
   }
 
   .speaker-btn {
-    background: none; border: none;
-    color: #888; cursor: pointer;
-    padding: 4px 8px;
+    padding: 10px 12px;
+    border-radius: 8px;
     border: 1px solid #ddd;
-    border-radius: 4px;
-    transition: all 0.15s;
+    background: #fff;
+    color: #888;
+    cursor: pointer;
     display: flex;
     align-items: center;
+    justify-content: center;
+    transition: all 0.15s;
+    flex-shrink: 0;
   }
-  .speaker-btn svg { width: 14px; height: 14px; }
+  .speaker-btn svg { width: 16px; height: 16px; }
   .speaker-btn:hover { color: #333; border-color: #999; }
   .speaker-btn.active { color: #2a5a9a; border-color: #2a5a9a; }
+
+  .index-selector-bar {
+    position: fixed;
+    top: 12px; left: 290px;
+    z-index: 300;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-family: 'Inter', sans-serif;
+  }
+  .index-selector-bar label {
+    font-size: 12px;
+    font-weight: 600;
+    color: #555;
+  }
+  .index-selector-bar select {
+    font-family: 'Inter', sans-serif;
+    font-size: 12px;
+    color: #333;
+    padding: 6px 10px;
+    border: 1px solid #ccc;
+    border-radius: 6px;
+    background: #fff;
+    cursor: pointer;
+    outline: none;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.08);
+    transition: border-color 0.15s;
+  }
+  .index-selector-bar select:hover { border-color: #999; }
+  .index-selector-bar select:focus { border-color: #2a5a9a; }
 
   .feedback-bar {
     display: flex;
@@ -295,12 +329,17 @@
   .control-panel { z-index: 50; }
 </style>
 
+<div class="index-selector-bar">
+  <label>Source:</label>
+  <select id="index-selector" onchange="switchIndex(this.value)"></select>
+  <button class="cp-memory-btn" id="cp-memory-btn" onclick="toggleMemoryGraph()" title="Toggle memory graph">Memory</button>
+</div>
+
 <div class="chat-panel">
   <div class="chat-header">
-    <h2>Knowledge</h2>
     <div class="chat-header-controls">
-      <select id="index-selector" onchange="switchIndex(this.value)"></select>
-      <button class="speaker-btn" id="speaker-toggle" onclick="toggleTts()" title="Toggle voice output"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><line x1="23" y1="9" x2="17" y2="15" class="speaker-off"/><line x1="17" y1="9" x2="23" y2="15" class="speaker-off"/></svg></button>
+      <span id="user-name" style="font-family:'Inter',sans-serif;font-size:11px;color:#2a5a9a;font-weight:500;display:none;"></span>
+      <button id="signout-btn" onclick="signOut()" style="display:none;">Sign out</button>
       <button onclick="clearChat()">Clear</button>
     </div>
   </div>
@@ -313,6 +352,7 @@
   <div class="chat-input-area">
     <input type="text" id="chat-input" placeholder="Ask a question..." />
     <button class="mic-btn" id="mic-btn" onclick="toggleMic()" title="Voice input"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg></button>
+    <button class="speaker-btn" id="speaker-toggle" onclick="toggleTts()" title="Toggle voice output"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><line x1="23" y1="9" x2="17" y2="15" class="speaker-off"/><line x1="17" y1="9" x2="23" y2="15" class="speaker-off"/></svg></button>
     <button id="chat-send" onclick="sendMessage()">Ask</button>
   </div>
 </div>
@@ -325,6 +365,153 @@ const chatMessages = document.getElementById('chat-messages');
 const chatSend = document.getElementById('chat-send');
 const typingEl = document.getElementById('typing');
 const indexSelector = document.getElementById('index-selector');
+
+let activeChatId = null;
+
+// ── Chat list management ─────────────────────────────────
+
+async function loadChats() {
+  try {
+    const resp = await fetch('/api/chats');
+    const data = await resp.json();
+    activeChatId = data.activeChatId;
+    renderChatList(data.chats, activeChatId);
+  } catch (e) {
+    console.error('Failed to load chats:', e);
+  }
+}
+
+function renderChatList(chats, activeId) {
+  const list = document.getElementById('cp-chat-list');
+  if (!list) return;
+  list.innerHTML = chats.map(c => {
+    const isActive = c.id === activeId;
+    const d = new Date(c.lastActivityAt || c.createdAt);
+    const date = d.toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' }) + ' ' + d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+    const title = c.title || 'New Chat';
+    const safeTitle = title.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    const safeId = c.id.replace(/"/g, '&quot;');
+    return '<div class="cp-chat-item' + (isActive ? ' active' : '') + '" data-chat-id="' + safeId + '" onclick="switchChatTo(\'' + safeId + '\')">' +
+      '<button class="cp-chat-delete" onclick="event.stopPropagation();deleteChatItem(\'' + safeId + '\')" title="Delete">&times;</button>' +
+      '<div class="cp-chat-item-title" ondblclick="event.stopPropagation();startRenameChat(\'' + safeId + '\',this)" title="Double-click to rename">' + safeTitle + '</div>' +
+      '<div class="cp-chat-item-date">' + date + '</div>' +
+    '</div>';
+  }).join('');
+}
+
+async function switchChatTo(chatId) {
+  if (chatId === activeChatId) return;
+  try {
+    await fetch('/api/chats/switch', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chatId }),
+    });
+    activeChatId = chatId;
+    await loadChats();
+    await loadChatHistory(chatId);
+    // Clear cached memories so memory viewer reloads for new chat
+    if (typeof cachedMemories !== 'undefined') cachedMemories = null;
+    // If memory graph is active, refresh it for the new chat
+    if (typeof memoryGraphActive !== 'undefined' && memoryGraphActive) {
+      toggleMemoryGraph(); // exit
+      toggleMemoryGraph(); // re-enter with new chatId
+    }
+    if (typeof clearPath === 'function') clearPath();
+  } catch (e) {
+    addMessage('system', 'Failed to switch chat: ' + e.message);
+  }
+}
+
+async function createNewChat() {
+  try {
+    const resp = await fetch('/api/chats', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+    const data = await resp.json();
+    activeChatId = data.chat.id;
+    chatMessages.innerHTML = '';
+    const name = indexSelector.value || 'the knowledge base';
+    addMessage('system', 'Ask a question about ' + name);
+    await loadChats();
+    if (typeof clearPath === 'function') clearPath();
+  } catch (e) {
+    addMessage('system', 'Failed to create chat');
+  }
+}
+
+async function deleteChatItem(chatId) {
+  try {
+    const resp = await fetch('/api/chats?id=' + encodeURIComponent(chatId), { method: 'DELETE' });
+    const data = await resp.json();
+    if (chatId === activeChatId) {
+      activeChatId = data.activeChatId || null;
+      chatMessages.innerHTML = '';
+      if (activeChatId) {
+        await loadChatHistory(activeChatId);
+      } else {
+        addMessage('system', 'Chat deleted');
+      }
+    }
+    await loadChats();
+  } catch (e) {
+    addMessage('system', 'Failed to delete chat');
+  }
+}
+
+function startRenameChat(chatId, titleEl) {
+  const current = titleEl.textContent;
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.value = current === 'New Chat' ? '' : current;
+  input.style.cssText = 'width:100%;font-family:Inter,sans-serif;font-size:12px;padding:1px 4px;border:1px solid #4a8eda;border-radius:3px;outline:none;box-sizing:border-box;';
+  titleEl.textContent = '';
+  titleEl.appendChild(input);
+  input.focus();
+  input.select();
+
+  function commit() {
+    const newTitle = input.value.trim() || current;
+    titleEl.textContent = newTitle;
+    if (newTitle !== current) {
+      fetch('/api/chats/rename', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chatId, title: newTitle }),
+      }).then(() => loadChats()).catch(() => { titleEl.textContent = current; });
+    }
+  }
+
+  input.addEventListener('blur', commit);
+  input.addEventListener('keydown', function(e) {
+    if (e.key === 'Enter') { e.preventDefault(); input.blur(); }
+    if (e.key === 'Escape') { input.value = current; input.blur(); }
+  });
+}
+
+async function loadChatHistory(chatId) {
+  chatMessages.innerHTML = '';
+  try {
+    const resp = await fetch('/api/chats/history?chatId=' + encodeURIComponent(chatId));
+    const data = await resp.json();
+    if (data.history && data.history.length > 0) {
+      for (const msg of data.history) {
+        let extraHtml = '';
+        if (msg.role === 'assistant' && msg.sources && msg.sources.length > 0) {
+          extraHtml = buildSourcesHtml(msg.sources);
+        }
+        addMessage(msg.role, msg.content, extraHtml);
+      }
+    } else {
+      const name = indexSelector.value || 'the knowledge base';
+      addMessage('system', 'Ask a question about ' + name);
+    }
+  } catch (e) {
+    addMessage('system', 'Failed to load history');
+  }
+}
 
 // Load available indexes on startup
 (async function loadIndexes() {
@@ -345,6 +532,9 @@ const indexSelector = document.getElementById('index-selector');
   } catch (e) {
     console.error('Failed to load indexes:', e);
   }
+  // Load chat list after indexes are ready
+  await loadChats();
+  if (activeChatId) await loadChatHistory(activeChatId);
 })();
 
 async function switchIndex(name) {
@@ -367,6 +557,8 @@ async function switchIndex(name) {
       }
       chatMessages.innerHTML = '';
       addMessage('system', 'Ask a question about ' + name);
+      // Refresh chat list for new index
+      await loadChats();
     }
   } catch (e) {
     addMessage('system', 'Switch failed: ' + e.message);
@@ -397,7 +589,7 @@ async function sendMessage() {
     const resp = await fetch('/api/ask-stream', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ query }),
+      body: JSON.stringify({ query, chatId: activeChatId }),
     });
 
     if (!resp.ok) {
@@ -467,23 +659,7 @@ async function sendMessage() {
     }
 
     // Final render with sources
-    let sourcesHtml = '';
-    if (sources.length > 0) {
-      sourcesHtml = '<div class="sources">' +
-        sources.map(s => {
-          const pg = s.pageStart === s.pageEnd ? 'p.' + s.pageStart : 'pp.' + s.pageStart + '-' + s.pageEnd;
-          const label = s.file.replace(/\.md$/, '').split('/').pop();
-          const safeFile = s.file.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
-          const safeLabel = label.replace(/&/g, '&amp;').replace(/</g, '&lt;');
-          if (s.url) {
-            const safeUrl = s.url.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
-            return '<div data-doc="doc:' + safeFile + '" data-url="' + safeUrl + '">[' + s.index + '] ' + safeLabel + ' (' + pg + ') \u2197</div>';
-          }
-          return '<div data-doc="doc:' + safeFile + '">[' + s.index + '] ' + safeLabel + ' (' + pg + ')</div>';
-        }).join('') +
-        '</div>';
-    }
-    msgDiv.innerHTML = formatAnswer(fullAnswer) + sourcesHtml;
+    msgDiv.innerHTML = formatAnswer(fullAnswer) + buildSourcesHtml(sources);
 
     // Add feedback bar
     if (memoryId) {
@@ -505,6 +681,9 @@ async function sendMessage() {
     // Flush any remaining TTS text
     flushTtsBuffer();
 
+    // Refresh chat list to pick up auto-title
+    loadChats();
+
   } catch (e) {
     typingEl.classList.remove('visible');
     addMessage('system', 'Connection error: ' + e.message);
@@ -516,6 +695,24 @@ async function sendMessage() {
 
 function formatAnswer(text) {
   return renderMarkdown(text);
+}
+
+function buildSourcesHtml(sources) {
+  if (!sources || sources.length === 0) return '';
+  return '<div class="sources">' +
+    sources.map(s => {
+      const pg = s.pageStart === s.pageEnd ? 'p.' + s.pageStart : 'pp.' + s.pageStart + '-' + s.pageEnd;
+      const label = s.file.replace(/\.md$/, '').split('/').pop();
+      const safeFile = s.file.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+      const safeLabel = label.replace(/&/g, '&amp;').replace(/</g, '&lt;');
+      const idx = s.index || '';
+      if (s.url) {
+        const safeUrl = s.url.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+        return '<div data-doc="doc:' + safeFile + '" data-url="' + safeUrl + '">[' + idx + '] ' + safeLabel + ' (' + pg + ') \u2197</div>';
+      }
+      return '<div data-doc="doc:' + safeFile + '">[' + idx + '] ' + safeLabel + ' (' + pg + ')</div>';
+    }).join('') +
+    '</div>';
 }
 
 function addMessage(role, text, extraHtml = '') {
@@ -543,7 +740,11 @@ function clearChat() {
   chatMessages.innerHTML = '';
   const name = indexSelector.value || 'the knowledge base';
   chatMessages.innerHTML = '<div class="chat-msg system" id="chat-welcome">Ask a question about ' + name + '</div>';
-  fetch('/api/forget', { method: 'POST' });
+  fetch('/api/forget', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ chatId: activeChatId }),
+  });
   if (typeof clearPath === 'function') clearPath();
 }
 
@@ -741,6 +942,42 @@ function showFeedbackForm(msgDiv, memoryId) {
   msgDiv.appendChild(form);
   chatMessages.scrollTop = chatMessages.scrollHeight;
 }
+
+// ── Auth: user display + sign out ─────────────────────────
+
+if (window.__USER__) {
+  const nameEl = document.getElementById('user-name');
+  nameEl.textContent = window.__USER__.name || window.__USER__.email;
+  nameEl.style.display = 'inline';
+  if (window.__USER__.isAdmin) {
+    const adminLink = document.createElement('a');
+    adminLink.href = '/admin';
+    adminLink.textContent = 'Admin';
+    adminLink.style.cssText = 'font-family:Inter,sans-serif;font-size:11px;color:#2a5a9a;font-weight:500;text-decoration:none;padding:4px 10px;border:1px solid #ddd;border-radius:4px;transition:all 0.15s;';
+    adminLink.onmouseover = function() { this.style.borderColor = '#999'; };
+    adminLink.onmouseout = function() { this.style.borderColor = '#ddd'; };
+    const signoutBtn = document.getElementById('signout-btn');
+    signoutBtn.parentNode.insertBefore(adminLink, signoutBtn);
+  }
+  document.getElementById('signout-btn').style.display = 'inline-block';
+}
+
+function signOut() {
+  fetch('/api/auth/logout', { method: 'POST' })
+    .then(r => r.json())
+    .then(data => {
+      if (data.logoutUrl) {
+        window.location.href = data.logoutUrl;
+      } else {
+        window.location.reload();
+      }
+    })
+    .catch(() => { window.location.reload(); });
+}
+
+// ── Feedback: include credentials when auth enabled ──────
+
+const fetchOpts = window.__USER__ ? { credentials: 'same-origin' } : {};
 
 function sendNegativeFeedback(submitBtn) {
   const form = submitBtn.closest('.feedback-form');

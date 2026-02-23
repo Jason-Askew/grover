@@ -12,7 +12,13 @@ Grover is a document search and RAG (Retrieval-Augmented Generation) system desi
 | **Knowledge Graph** | Builds an in-memory graph of brands, categories, documents, entities, and their relationships |
 | **Semantic Search** | Brute-force cosine distance search over 384-dimensional embeddings, boosted by graph traversal |
 | **Domain-Aware RAG** | Retrieves relevant chunks, constructs context with conversation history, generates cited answers via LLM with domain-specific system prompts |
-| **Conversation Memory** | Persists Q&A history (capped at 200 memories), finds relevant past interactions by embedding similarity, rewrites follow-up queries |
+| **Conversation Memory** | Persists Q&A history per chat (capped at 200 memories), finds relevant past interactions by embedding similarity weighted by feedback quality, rewrites follow-up queries |
+| **Authentication** | Keycloak OIDC with PKCE flow, JWKS validation, server-side sessions, role-based access control |
+| **Chat Management** | Per-user multi-chat isolation with auto-titling, rename, delete, and legacy migration |
+| **Admin Panel** | User management via Keycloak Admin REST API, token usage statistics dashboard |
+| **Usage Tracking** | Per-user and per-model token counting with cost estimation, persisted to disk |
+| **User Feedback** | Thumbs up/down with categorization, content-keyed quality scoring, cross-user shared feedback index, SONA trajectory integration |
+| **Category Inference** | 4-tier filename analysis (form codes, language detection, keyword rules, medical patterns) for 100% SA category coverage |
 | **Web UI** | Interactive graph visualization (vis-network) with integrated chat panel, voice interface, and graceful shutdown |
 | **Multi-Index** | Isolated indexes per corpus with runtime switching and per-index memory/learning state |
 
@@ -21,7 +27,7 @@ Grover is a document search and RAG (Retrieval-Augmented Generation) system desi
 ```
                            ┌─────────────────────────────┐
                            │      CLI Dispatcher          │
-                           │        search.js             │
+                           │        grover.js             │
                            └──────────┬──────────────────-┘
                                       │
               ┌───────────┬───────────┼───────────┬──────────────┐
@@ -39,17 +45,17 @@ Grover is a document search and RAG (Retrieval-Augmented Generation) system desi
 │Extract │   │Persist.  │ │ Pipeline │                │  + Chat UI   │
 └────┬───┘   └──────────┘ └────┬─────┘                └──────┬───────┘
      │                         │                             │
-     ▼                         ▼                             ▼
-┌──────────┐            ┌──────────┐                  ┌──────────────┐
-│Knowledge │            │  LLM /   │                  │  Viz Builder │
-│  Graph   │            │   RAG    │                  │  + Graph     │
-└──────────┘            └────┬─────┘                  └──────────────┘
-                             │
+     ▼                         ▼                     ┌───────┼────────┐
+┌──────────┐            ┌──────────┐                 ▼       ▼        ▼
+│Knowledge │            │  LLM /   │          ┌─────────┐ ┌──────┐ ┌──────┐
+│  Graph   │            │   RAG    │          │  Auth   │ │Admin │ │ Chat │
+└──────────┘            └────┬─────┘          │(Keyclk)│ │ API  │ │ Mgr  │
+                             │                └─────────┘ └──────┘ └──────┘
                              ▼
-                      ┌──────────────┐
-                      │ Conversation │
-                      │   Memory     │
-                      └──────────────┘
+                      ┌──────────────┐        ┌──────────┐ ┌──────────┐
+                      │ Conversation │        │ Feedback │ │  Usage   │
+                      │   Memory     │◄──────▶│  Index   │ │ Tracker  │
+                      └──────────────┘        └──────────┘ └──────────┘
 ```
 
 ## 4. Data Flow
@@ -118,12 +124,83 @@ Q&A interaction
     ├──▶ ConversationMemory.store()
     │       • Embed query → store in ReasoningBank
     │       • Record trajectory in SONA coordinator
-    │       • Persist to memory.json (last 100 messages)
+    │       • Persist to per-chat memory file (last 100 messages)
     │
     └──▶ On next query:
-            • findRelevant() — cosine similarity against past queries
+            • findRelevant() — cosine similarity × quality score against past queries
             • getRecentHistory() — last 6 messages for LLM context
             • rewriteQuery() — expand follow-ups into standalone queries
+            • Negative feedback annotations surfaced to LLM
+```
+
+### 4.4 Authentication Flow
+
+```
+Browser → GET /
+    │
+    ├── No KEYCLOAK_URL → anonymous access, full UI
+    │
+    └── KEYCLOAK_URL set:
+            │
+            ├── Has session cookie → validate → inject user info → full UI
+            │
+            └── No session → show login overlay
+                    │
+                    ▼  PKCE OIDC flow
+                    Browser generates code_verifier, redirects to Keycloak /auth
+                    │
+                    ▼  User authenticates at Keycloak
+                    Keycloak redirects to /auth/callback with authorization code
+                    │
+                    ▼  Browser exchanges code for tokens at Keycloak /token
+                    │
+                    ▼  POST /api/auth/session { id_token }
+                    Server validates JWT via JWKS → creates session → sets HttpOnly cookie
+                    │
+                    ▼  Reload page → session cookie present → authenticated
+```
+
+### 4.5 Chat Management Flow
+
+```
+User opens UI
+    │
+    ▼  ChatManager.load()
+    │   • Loads chats.json metadata (per-user directory)
+    │   • Migrates legacy memory.json if no chats exist
+    │   • Ensures at least one chat always exists
+    │
+    ├──▶ POST /api/chats → create new chat
+    ├──▶ POST /api/chats/switch → switch active chat
+    ├──▶ POST /api/chats/rename → rename chat
+    ├──▶ DELETE /api/chats?id=X → delete chat + memory file
+    │
+    └──▶ POST /api/ask { query, chatId }
+            • ChatManager routes to correct memory file
+            • autoTitle() sets chat title from first query
+            • touchChat() updates lastActivityAt
+```
+
+### 4.6 Feedback Flow
+
+```
+User clicks 👍 or 👎 on an answer
+    │
+    ▼  POST /api/feedback { memoryId, type, category?, comment? }
+    │
+    ├──▶ ConversationMemory.recordFeedback()
+    │       • Updates quality score on the memory entry
+    │       • Records feedback trajectory in SONA
+    │       • Quality mapping: wrong+wrong=0.1, wrong+right=0.3, right+wrong=0.5, incomplete=0.6
+    │
+    └──▶ FeedbackIndex.record()
+            • Content-keyed by hash(query + sorted source files)
+            • Quality degrades to minimum across all user feedbacks
+            • Shared across users — negative feedback from any user affects all
+    │
+    ▼  On next query:
+         findRelevant() → similarity × min(per-memory quality, shared quality)
+         Past answers with negative feedback get annotation: "avoid repeating same issues"
 ```
 
 ## 5. Key Design Decisions
@@ -165,18 +242,44 @@ The system prompt for RAG generation is customized per index domain. Each domain
 
 The application is organized into a layered module structure with strict dependency rules to prevent circular imports. Each module has a single responsibility and clear public API.
 
+### 5.7 Categories-Only Ontology for Services Australia
+
+Unlike the Westpac domain (which has 4 distinct brands), Services Australia is a single agency. Service lines (Centrelink, Medicare, Child Support, myGov) are captured as categories rather than brands, avoiding duplicate nodes in the knowledge graph. `SA_BRANDS` is an empty object.
+
+### 5.8 Category Inference from Filenames
+
+The SA corpus places many documents under a `general/` directory. A 4-tier inference system classifies these:
+1. **Form codes** — distinctive patterns like `fa012`, `mod-pc` → `forms`
+2. **Language detection** — a set of ~90 known language basenames → `translations`
+3. **Keyword rules** — ~40 ordered rules from specific to general, first match wins
+4. **Medical conditions** — broad regex for PBS drug pages → `pharmaceutical-benefits`
+
+This achieves 100% category coverage across 33 SA categories. The viz builder also performs retroactive reassignment at serve time for graphs built before the inference logic was added.
+
+### 5.9 Content-Keyed Feedback Index
+
+Feedback is indexed by a hash of the query + sorted source files, not by memory ID. This means:
+- The same question retrieving the same documents shares a quality score across users
+- Negative feedback from any user degrades quality for all users
+- The LLM is told when a past interaction received negative feedback, reducing repeat errors
+
 ## 6. External Dependencies
 
 | Dependency | Purpose | Required For |
 |-----------|---------|-------------|
 | `ruvector` | Rust/NAPI vector DB with ONNX embedding | All operations |
 | `@ruvector/ruvllm` | ReasoningBank, SONA coordinator, trajectories | Conversation memory |
+| `jose` | JWT verification and JWKS key set management | Authentication (lazy-loaded) |
+| `@aws-sdk/client-polly` | Amazon Polly text-to-speech | Voice output (optional) |
 | `pymupdf` (Python) | PDF text extraction | Ingestion only |
 | OpenAI-compatible API | LLM chat completions | RAG answers only |
+| Keycloak | OIDC identity provider | Authentication (optional) |
 
 ## 7. Deployment Model
 
 Grover runs as a single-process Node.js application for search and serving. Ingestion spawns short-lived child processes for embedding but is otherwise self-contained. There is no database server, message queue, or container orchestration — all state is stored in flat files under `./index/`. This makes it suitable for local or small-team use on a single machine.
+
+A `docker-compose.yml` is provided for running Keycloak locally for development. In production, Keycloak should be deployed separately.
 
 The web server supports graceful shutdown via SIGTERM/SIGINT and handles client disconnects during SSE streaming. Debug logging is available via `GROVER_DEBUG=1`.
 
@@ -189,5 +292,8 @@ The web server supports graceful shutdown via SIGTERM/SIGINT and handles client 
 | Batch size | 500 files per child process |
 | Typical ingestion | ~2,400 files → ~13,000 chunks in ~30 minutes |
 | Index size | ~20MB embeddings + ~20MB metadata + ~18MB graph |
-| Memory cap | 200 conversation memories with LRU eviction |
+| Memory cap | 200 conversation memories per chat with LRU eviction |
 | Search latency | <50ms for brute-force cosine over 13,000 chunks |
+| SA categories | 33 categories with 100% coverage via filename inference |
+| SA vocabulary | ~55 payment types, ~74 government concepts |
+| Westpac vocabulary | 23 product types, 28 financial concepts, 4 brands, 4 categories |

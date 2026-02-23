@@ -69,7 +69,7 @@ Also audit and fix `chat-panel.html:395` where `data-url` attributes are built v
 
 ---
 
-### 1.3 Add Request Body Size Limit
+### ✅ 1.3 Add Request Body Size Limit
 
 **File**: `src/commands/serve.js:52-58`
 
@@ -101,7 +101,7 @@ function readBody(req, maxBytes = 1024 * 1024) {
 
 ## Phase 2: Performance Optimisations (High)
 
-### 2.1 Add Record Lookup Map in Graph Expansion
+### ✅ 2.1 Add Record Lookup Map in Graph Expansion
 
 **File**: `src/graph/knowledge-graph.js:244`
 
@@ -123,7 +123,7 @@ expandResults(vectorResults, allRecords, k = 10) {
 
 ---
 
-### 2.2 Add Reverse Chunk-to-Doc Map in Viz Builder
+### ✅ 2.2 Add Reverse Chunk-to-Doc Map in Viz Builder
 
 **File**: `src/server/viz-builder.js:31-36`
 
@@ -152,7 +152,7 @@ function buildVizData(graph) {
 
 ---
 
-### 2.3 Pass Query Embedding Through Retrieve to RAG
+### ✅ 2.3 Pass Query Embedding Through Retrieve to RAG
 
 **Files**: `src/retrieval/retrieve.js:9`, `src/llm/rag.js:46`
 
@@ -210,7 +210,7 @@ const tgtV = filterState.nodeValues[visNodeById[e.to]?.nodeType]?.[e.to];
 
 ## Phase 3: DRY Refactors (Medium)
 
-### 3.1 Extract Shared SSE Stream Parser
+### ✅ 3.1 Extract Shared SSE Stream Parser
 
 **File**: `src/llm/client.js`
 
@@ -268,7 +268,7 @@ Also extract the shared fetch setup (headers, body construction) into a helper.
 
 ---
 
-### 3.2 Extract Viz Path Builder
+### ✅ 3.2 Extract Viz Path Builder
 
 **File**: `src/commands/serve.js:157-192` and `249-276`
 
@@ -320,7 +320,7 @@ function buildCitedVizPath(graph, sources) {
 
 ---
 
-### 3.3 Extract Shared `ragAnswer` Message Building
+### ✅ 3.3 Extract Shared `ragAnswer` Message Building
 
 **File**: `src/llm/rag.js`
 
@@ -414,7 +414,7 @@ Then both `chunkPages` and `chunkText` call `findChunkEnd`.
 
 ---
 
-### 3.5 Extract Shared Index Loading with Fallback
+### ✅ 3.5 Extract Shared Index Loading with Fallback
 
 **Files**: `src/commands/search.js`, `src/commands/ask.js`, `src/commands/interactive.js`, `src/commands/stats.js`, `src/commands/serve.js`, `src/commands/update.js`
 
@@ -423,7 +423,7 @@ Then both `chunkPages` and `chunkText` call `findChunkEnd`.
 ```js
 let index = loadIndex(paths);
 if (!index && indexName === 'Westpac') index = loadIndex();
-if (!index) { console.log('No index found. Run: node search.js ingest'); return; }
+if (!index) { console.log('No index found. Run: node grover.js ingest'); return; }
 ```
 
 **Fix**: Add a `loadIndexWithFallback(paths, indexName)` function to `src/persistence/index-persistence.js`.
@@ -475,7 +475,7 @@ Place in `graph-viz.html` (before chat-panel is injected) so both files can use 
 
 ## Phase 4: Robustness (Medium)
 
-### 4.1 Add LLM Request Timeout
+### ✅ 4.1 Add LLM Request Timeout
 
 **File**: `src/llm/client.js`
 
@@ -508,7 +508,7 @@ async function callLLM(messages, { stream = true, timeoutMs = 60000 } = {}) {
 
 ---
 
-### 4.2 Make RAG System Prompt Domain-Aware
+### ✅ 4.2 Make RAG System Prompt Domain-Aware
 
 **File**: `src/llm/rag.js:5-23`
 
@@ -541,7 +541,7 @@ Pass the domain through from the server/command layer.
 
 ---
 
-### 4.3 Cap Conversation Memory Size
+### ✅ 4.3 Cap Conversation Memory Size
 
 **File**: `src/memory/conversation-memory.js:67`
 
@@ -569,7 +569,7 @@ async store(query, answer, sources, queryEmbedding) {
 
 ---
 
-### 4.4 Add Graceful Server Shutdown
+### ✅ 4.4 Add Graceful Server Shutdown
 
 **File**: `src/commands/serve.js`
 
@@ -596,7 +596,7 @@ process.on('SIGINT', shutdown);
 
 ---
 
-### 4.5 Handle Client Disconnect on SSE Streams
+### ✅ 4.5 Handle Client Disconnect on SSE Streams
 
 **File**: `src/commands/serve.js:208-293`
 
@@ -624,22 +624,22 @@ if (req.method === 'POST' && req.url === '/api/ask-stream') {
 
 ## Phase 5: Project Hygiene (Low)
 
-### 5.1 Fix `package.json`
+### ✅ 5.1 Fix `package.json`
 
 **File**: `package.json`
 
 **Changes**:
 - Rename `"name"` from `"ruvector-project"` to `"grover"`
-- Change `"main"` from `"index.js"` to `"search.js"`
-- Add `"bin": { "grover": "./search.js" }`
+- Change `"main"` from `"index.js"` to `"grover.js"`
+- Add `"bin": { "grover": "./grover.js" }`
 - Audit `cheerio` and `turndown` — if unused, remove from dependencies
 - Add `"description"` field
 
 ---
 
-### 5.2 Fix `parseInt` Without Radix
+### ✅ 5.2 Fix `parseInt` Without Radix
 
-**File**: `search.js:22`
+**File**: `grover.js:22`
 
 ```js
 // CURRENT
@@ -649,11 +649,11 @@ return parseInt(args.find((_, i) => args[i - 1] === '--k') || String(def));
 return parseInt(args.find((_, i) => args[i - 1] === '--k') || String(def), 10);
 ```
 
-**Files changed**: `search.js`
+**Files changed**: `grover.js`
 
 ---
 
-### 5.3 Use Absolute Paths in Config
+### ✅ 5.3 Use Absolute Paths in Config
 
 **File**: `src/config.js:4-5`
 
@@ -673,7 +673,7 @@ Also update `resolveIndex` to use `PROJECT_ROOT`.
 
 ---
 
-### 5.4 Add Word Boundary to Entity Extraction
+### ✅ 5.4 Add Word Boundary to Entity Extraction
 
 **File**: `src/graph/entity-extraction.js:25-29`
 
@@ -694,7 +694,7 @@ Note: Pre-compile the regexes once per domain (not per call) for performance.
 
 ---
 
-### 5.5 Consolidate `findPdfs` and `findMarkdownFiles`
+### ✅ 5.5 Consolidate `findPdfs` and `findMarkdownFiles`
 
 **File**: `src/utils/file-discovery.js`
 
@@ -728,7 +728,7 @@ Export both the generic and specific versions for backward compatibility.
 
 ---
 
-### 5.6 Improve Silent Error Handling
+### ✅ 5.6 Improve Silent Error Handling
 
 **Files**: `src/llm/client.js:59`, `src/commands/stats.js:68`, `src/llm/query-rewrite.js:37`
 
@@ -749,7 +749,7 @@ catch (e) {
 
 ---
 
-### 5.7 Cache Float32Array Conversions in Memory
+### ✅ 5.7 Cache Float32Array Conversions in Memory
 
 **File**: `src/memory/conversation-memory.js:91`
 
@@ -819,7 +819,7 @@ Phases 1 and 2 are independent and can be done in parallel. Phase 3.3 depends on
 | `src/commands/stats.js` | 3.5, 5.6 |
 | `src/commands/update.js` | 3.5 |
 | `src/memory/conversation-memory.js` | 4.3, 5.7 |
-| `search.js` | 5.2 |
+| `grover.js` | 5.2 |
 | `src/config.js` | 5.3 |
 | `src/graph/entity-extraction.js` | 5.4 |
 | `src/utils/file-discovery.js` | 5.5 |

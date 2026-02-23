@@ -1,0 +1,17 @@
+{
+  "chats": [
+    {
+      "id": "chat-5374560b-a13",
+      "title": "Family Tax Benefit",
+      "createdAt": "2026-02-23T02:14:09.815Z",
+      "lastActivityAt": "2026-02-23T02:15:20.668Z"
+    },
+    {
+      "id": "chat-7137eb89-edb",
+      "title": "Who can get Carer Payment?",
+      "createdAt": "2026-02-23T02:17:43.345Z",
+      "lastActivityAt": "2026-02-23T02:17:53.909Z"
+    }
+  ],
+  "activeChatId": "chat-7137eb89-edb"
+}
