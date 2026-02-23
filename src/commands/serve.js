@@ -208,7 +208,7 @@ async function serve(port = 3000, indexName = null) {
 
         const { results, path: graphPath, mode, queryVec } = await retrieve(query, currentIndex, { k: 8, graphMode: true, memory: currentMemory });
 
-        const { answer, sources } = await ragAnswer(query, results, currentMemory, { stream: false, queryVec, domain: currentName });
+        const { answer, sources, memoryId } = await ragAnswer(query, results, currentMemory, { stream: false, queryVec, domain: currentName });
 
         const vizPath = buildCitedVizPath(currentIndex.graph, sources, currentVizData);
 
@@ -216,7 +216,7 @@ async function serve(port = 3000, indexName = null) {
         if (vizPath) {
           console.log(`  Path: ${vizPath.nodes.length} nodes, ${vizPath.edges.length} edges`);
         }
-        res.end(JSON.stringify({ answer, sources, path: vizPath, mode }));
+        res.end(JSON.stringify({ answer, sources, path: vizPath, mode, memoryId }));
 
       } catch (e) {
         console.error('[ask error]', e.message);
@@ -263,7 +263,7 @@ async function serve(port = 3000, indexName = null) {
         req.on('close', () => { clientDisconnected = true; });
 
         // Stream answer tokens
-        const { answer } = await ragAnswerStream(query, results, currentMemory, (token) => {
+        const { answer, memoryId } = await ragAnswerStream(query, results, currentMemory, (token) => {
           if (!clientDisconnected) {
             res.write(`event: token\ndata: ${JSON.stringify(token)}\n\n`);
           }
@@ -271,8 +271,8 @@ async function serve(port = 3000, indexName = null) {
 
         const vizPath = buildCitedVizPath(currentIndex.graph, sources, currentVizData);
 
-        // Send done event with path
-        res.write(`event: done\ndata: ${JSON.stringify({ path: vizPath, mode })}\n\n`);
+        // Send done event with path and memoryId
+        res.write(`event: done\ndata: ${JSON.stringify({ path: vizPath, mode, memoryId })}\n\n`);
         res.end();
 
       } catch (e) {
@@ -360,9 +360,35 @@ async function serve(port = 3000, indexName = null) {
         sources: m.sources,
         timestamp: m.timestamp,
         quality: m.quality,
+        feedback: m.feedback || null,
       }));
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ memories }));
+      return;
+    }
+
+    if (req.method === 'POST' && req.url === '/api/feedback') {
+      const body = await readBody(req);
+      try {
+        const { memoryId, type, category, comment } = JSON.parse(body);
+        if (!memoryId || !type) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Missing memoryId or type' }));
+          return;
+        }
+        const quality = currentMemory.recordFeedback(memoryId, type, category || null, comment || null);
+        if (quality === null) {
+          res.writeHead(404, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Memory not found' }));
+          return;
+        }
+        console.log(`[feedback][${currentName}] ${memoryId} → ${type}${category ? ' (' + category + ')' : ''} quality=${quality}`);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, quality }));
+      } catch (e) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: e.message }));
+      }
       return;
     }
 

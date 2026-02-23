@@ -363,6 +363,24 @@
     display: inline-block; background: #eee; border-radius: 3px;
     padding: 1px 5px; margin: 1px 2px;
   }
+  .memory-card-feedback {
+    font-size: 10px; margin-top: 6px; padding-top: 6px;
+    border-top: 1px solid #e8e8e8;
+  }
+  .memory-card-feedback .fb-positive { color: #27ae60; }
+  .memory-card-feedback .fb-negative { color: #c0392b; }
+  .memory-card-feedback .fb-none { color: #bbb; }
+  .memory-card-feedback .fb-category {
+    display: inline-block; background: #fdecea; color: #c0392b;
+    border-radius: 3px; padding: 1px 5px; margin-left: 4px; font-size: 9px;
+  }
+  .memory-card-feedback .fb-comment {
+    display: block; margin-top: 4px; color: #888; font-style: italic;
+  }
+  .memory-feedback-stat {
+    font-size: 11px; color: #999; font-family: 'Inter', sans-serif;
+    margin-top: 2px;
+  }
   .cp-memory-btn {
     background: none; border: 1px solid #ddd; border-radius: 4px;
     padding: 2px 8px; font-size: 11px; cursor: pointer; color: #666;
@@ -1100,18 +1118,27 @@ function buildMemoryNetwork(memories) {
   // Sort chronologically
   memories.sort((a, b) => new Date(a.timestamp || 0) - new Date(b.timestamp || 0));
 
-  // Create memory nodes
+  // Create memory nodes — color by feedback status
   memories.forEach((m, i) => {
     const truncQ = (m.query || '').length > 50 ? (m.query || '').slice(0, 47) + '...' : (m.query || '');
+    const fb = m.feedback;
+    let bg, border, shadowColor;
+    if (fb && fb.type === 'positive') {
+      bg = '#27ae60'; border = '#1e8449'; shadowColor = 'rgba(39,174,96,0.3)';
+    } else if (fb && fb.type === 'negative') {
+      bg = '#c0392b'; border = '#96281b'; shadowColor = 'rgba(192,57,43,0.3)';
+    } else {
+      bg = '#f0a030'; border = '#d48820'; shadowColor = 'rgba(240,160,48,0.3)';
+    }
     nodes.push({
       id: m.id,
       label: truncQ,
       shape: 'dot',
       size: 30,
-      color: { background: '#f0a030', border: '#d48820', highlight: { background: '#ffc060', border: '#fff' }, hover: { background: '#f0a030', border: '#333' } },
+      color: { background: bg, border: border, highlight: { background: bg, border: '#fff' }, hover: { background: bg, border: '#333' } },
       font: { size: 12, color: '#333', face: 'Inter, sans-serif', multi: 'html' },
       borderWidth: 2,
-      shadow: { enabled: true, color: 'rgba(240,160,48,0.3)', size: 8, x: 0, y: 0 },
+      shadow: { enabled: true, color: shadowColor, size: 8, x: 0, y: 0 },
       memoryData: m,
       nodeType: 'memory',
     });
@@ -1236,8 +1263,16 @@ function buildMemoryNetwork(memories) {
     }
   });
 
-  // Update stats
-  document.getElementById('cp-stats').textContent = nodes.length + 'n · ' + edges.length + 'e';
+  // Update stats with feedback %
+  const withFeedback = memories.filter(m => m.feedback);
+  const positive = memories.filter(m => m.feedback && m.feedback.type === 'positive').length;
+  const negative = memories.filter(m => m.feedback && m.feedback.type === 'negative').length;
+  let statsText = nodes.length + 'n · ' + edges.length + 'e';
+  if (withFeedback.length > 0) {
+    const pct = Math.round((positive / withFeedback.length) * 100);
+    statsText += ' · ' + pct + '% positive (' + withFeedback.length + ' rated)';
+  }
+  document.getElementById('cp-stats').textContent = statsText;
 }
 
 function openMemoryDetail(m) {
@@ -1251,10 +1286,31 @@ function openMemoryDetail(m) {
     return '<span>' + label.replace(/&/g,'&amp;').replace(/</g,'&lt;') + '</span>';
   }).join(' ');
 
+  let feedbackHtml = '';
+  if (m.feedback) {
+    const fb = m.feedback;
+    if (fb.type === 'positive') {
+      feedbackHtml = '<div class="memory-card-feedback"><span class="fb-positive">&#9650; Positive feedback</span></div>';
+    } else {
+      feedbackHtml = '<div class="memory-card-feedback"><span class="fb-negative">&#9660; Negative feedback</span>';
+      if (fb.category) {
+        feedbackHtml += '<span class="fb-category">' + fb.category.replace(/&/g,'&amp;').replace(/</g,'&lt;') + '</span>';
+      }
+      feedbackHtml += '<br><span class="fb-none">Quality: ' + ((m.quality ?? 1.0) * 100).toFixed(0) + '%</span>';
+      if (fb.comment) {
+        feedbackHtml += '<span class="fb-comment">"' + fb.comment.replace(/&/g,'&amp;').replace(/</g,'&lt;') + '"</span>';
+      }
+      feedbackHtml += '</div>';
+    }
+  } else {
+    feedbackHtml = '<div class="memory-card-feedback"><span class="fb-none">No feedback yet</span></div>';
+  }
+
   body.innerHTML = '<div class="memory-card">'
     + '<div class="memory-card-q">Q: ' + (m.query||'').replace(/&/g,'&amp;').replace(/</g,'&lt;') + '</div>'
     + '<div class="memory-card-a"><p>' + answer + '</p></div>'
     + (sources ? '<div class="memory-card-sources">Sources: ' + sources + '</div>' : '')
+    + feedbackHtml
     + '</div>';
 
   viewer.classList.add('visible');
@@ -1282,11 +1338,22 @@ async function openMemoryViewer() {
         const label = typeof s === 'string' ? s : (s.file || s.title || 'source');
         return '<span>' + label.replace(/&/g,'&amp;').replace(/</g,'&lt;') + '</span>';
       }).join(' ');
+      let fbHtml = '';
+      if (m.feedback) {
+        if (m.feedback.type === 'positive') {
+          fbHtml = '<div class="memory-card-feedback"><span class="fb-positive">&#9650; Positive</span></div>';
+        } else {
+          fbHtml = '<div class="memory-card-feedback"><span class="fb-negative">&#9660; Negative</span>';
+          if (m.feedback.category) fbHtml += '<span class="fb-category">' + m.feedback.category.replace(/&/g,'&amp;').replace(/</g,'&lt;') + '</span>';
+          fbHtml += '</div>';
+        }
+      }
       return '<div class="memory-card">'
         + (time ? '<div class="memory-card-time">' + time + '</div>' : '')
         + '<div class="memory-card-q">Q: ' + (m.query||'').replace(/&/g,'&amp;').replace(/</g,'&lt;') + '</div>'
         + '<div class="memory-card-a"><p>' + answer + '</p></div>'
         + (sources ? '<div class="memory-card-sources">Sources: ' + sources + '</div>' : '')
+        + fbHtml
         + '</div>';
     }).join('');
   } catch (e) {
