@@ -1,0 +1,17 @@
+{
+  "chats": [
+    {
+      "id": "chat-3d338a00-956",
+      "title": "What is the qualifying age for Age Pension?",
+      "createdAt": "2026-02-23T02:53:04.208Z",
+      "lastActivityAt": "2026-02-23T05:07:11.640Z"
+    },
+    {
+      "id": "chat-1e2b9f36-3fc",
+      "title": "Who is eligible for Disability Support Pension?",
+      "createdAt": "2026-02-23T02:57:56.235Z",
+      "lastActivityAt": "2026-02-23T02:58:07.014Z"
+    }
+  ],
+  "activeChatId": "chat-3d338a00-956"
+}

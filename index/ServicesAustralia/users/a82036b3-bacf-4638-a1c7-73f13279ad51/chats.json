@@ -1,0 +1,17 @@
+{
+  "chats": [
+    {
+      "id": "chat-1f398d45-b67",
+      "title": "What is the difference between a pension and an...",
+      "createdAt": "2026-02-23T01:19:55.837Z",
+      "lastActivityAt": "2026-02-23T01:20:54.630Z"
+    },
+    {
+      "id": "chat-b21e4c73-55e",
+      "title": "What aged care services are available?",
+      "createdAt": "2026-02-23T01:21:52.368Z",
+      "lastActivityAt": "2026-02-23T01:22:03.313Z"
+    }
+  ],
+  "activeChatId": "chat-1f398d45-b67"
+}
