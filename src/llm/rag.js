@@ -47,9 +47,13 @@ async function buildRagContext(query, results, memory, queryVec, domain) {
 
     if (pastInteractions.length > 0) {
       memoryContext = '\n\nRelevant past interactions:\n' +
-        pastInteractions.map((m, i) =>
-          `[Past Q${i + 1}]: ${m.query}\n[Past A${i + 1}]: ${m.answer}`
-        ).join('\n\n');
+        pastInteractions.map((m, i) => {
+          let entry = `[Past Q${i + 1}]: ${m.query}\n[Past A${i + 1}]: ${m.answer}`;
+          if (m.feedback && m.feedback.type === 'negative') {
+            entry += `\n[Note: This past answer received negative feedback — category: "${m.feedback.category || 'unspecified'}". Avoid repeating the same issues.]`;
+          }
+          return entry;
+        }).join('\n\n');
     }
 
     const recent = memory.getRecentHistory(6);
@@ -107,11 +111,12 @@ async function ragAnswer(query, results, memory = null, { stream = true, queryVe
     console.log('\n');
   }
 
+  let memoryId = null;
   if (memory && queryEmb) {
-    await memory.store(query, answer, results, queryEmb);
+    memoryId = await memory.store(query, answer, results, queryEmb);
   }
 
-  return { answer, sources: buildSourcesSummary(results) };
+  return { answer, sources: buildSourcesSummary(results), memoryId };
 }
 
 async function ragAnswerStream(query, results, memory, onToken, { queryVec = null, domain = null } = {}) {
@@ -119,11 +124,12 @@ async function ragAnswerStream(query, results, memory, onToken, { queryVec = nul
 
   const answer = await callLLMStream(messages, onToken);
 
+  let memoryId = null;
   if (memory && queryEmb) {
-    await memory.store(query, answer, results, queryEmb);
+    memoryId = await memory.store(query, answer, results, queryEmb);
   }
 
-  return { answer, sources: buildSourcesSummary(results) };
+  return { answer, sources: buildSourcesSummary(results), memoryId };
 }
 
 module.exports = { getSystemPrompt, ragAnswer, ragAnswerStream };

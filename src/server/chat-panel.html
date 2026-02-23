@@ -210,6 +210,86 @@
   .speaker-btn:hover { color: #333; border-color: #999; }
   .speaker-btn.active { color: #2a5a9a; border-color: #2a5a9a; }
 
+  .feedback-bar {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-top: 8px;
+    padding-top: 6px;
+    border-top: 1px solid #e8e8e8;
+    font-family: 'Inter', sans-serif;
+    font-size: 10px;
+    color: #aaa;
+  }
+  .feedback-bar span { margin-right: 2px; }
+  .feedback-btn {
+    background: none;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    padding: 3px 8px;
+    cursor: pointer;
+    font-size: 12px;
+    color: #888;
+    transition: all 0.15s;
+    line-height: 1;
+  }
+  .feedback-btn:hover { border-color: #999; color: #333; }
+  .feedback-btn.selected {
+    border-color: #2a5a9a;
+    color: #2a5a9a;
+    cursor: default;
+  }
+  .feedback-confirmed {
+    font-family: 'Inter', sans-serif;
+    font-size: 10px;
+    color: #aaa;
+    margin-top: 8px;
+    padding-top: 6px;
+    border-top: 1px solid #e8e8e8;
+  }
+  .feedback-form {
+    margin-top: 8px;
+    padding: 10px;
+    background: #f9f9f9;
+    border: 1px solid #e0e0e0;
+    border-radius: 6px;
+    font-family: 'Inter', sans-serif;
+    font-size: 11px;
+    color: #555;
+  }
+  .feedback-form label {
+    display: block;
+    padding: 4px 0;
+    cursor: pointer;
+  }
+  .feedback-form input[type="radio"] { margin-right: 6px; }
+  .feedback-form textarea {
+    width: 100%;
+    margin-top: 6px;
+    padding: 6px 8px;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    font-family: 'Inter', sans-serif;
+    font-size: 11px;
+    resize: vertical;
+    min-height: 40px;
+    box-sizing: border-box;
+  }
+  .feedback-form button {
+    margin-top: 8px;
+    padding: 5px 14px;
+    border: none;
+    border-radius: 4px;
+    background: #2a5a9a;
+    color: #fff;
+    font-family: 'Inter', sans-serif;
+    font-size: 11px;
+    cursor: pointer;
+    transition: background 0.15s;
+  }
+  .feedback-form button:hover { background: #3a7bd5; }
+  .feedback-form button:disabled { opacity: 0.4; cursor: not-allowed; }
+
   /* Adjust graph area for chat panel */
   #graph-container { left: 280px; right: 420px; }
   .control-panel { z-index: 50; }
@@ -337,6 +417,7 @@ async function sendMessage() {
     let fullAnswer = '';
     let sources = [];
     let vizPath = null;
+    let memoryId = null;
 
     const reader = resp.body.getReader();
     const decoder = new TextDecoder();
@@ -360,6 +441,7 @@ async function sendMessage() {
               onStreamToken(parsed);
             } else if (eventType === 'done') {
               vizPath = parsed.path;
+              memoryId = parsed.memoryId || null;
             } else if (eventType === 'error') {
               addMessage('system', 'Error: ' + parsed.error);
             }
@@ -402,6 +484,18 @@ async function sendMessage() {
         '</div>';
     }
     msgDiv.innerHTML = formatAnswer(fullAnswer) + sourcesHtml;
+
+    // Add feedback bar
+    if (memoryId) {
+      msgDiv.dataset.memoryId = memoryId;
+      const feedbackBar = document.createElement('div');
+      feedbackBar.className = 'feedback-bar';
+      feedbackBar.innerHTML =
+        '<span>Helpful?</span>' +
+        '<button class="feedback-btn" onclick="submitFeedback(this, \'positive\')" title="Good answer">&#9650;</button>' +
+        '<button class="feedback-btn" onclick="submitFeedback(this, \'negative\')" title="Bad answer">&#9660;</button>';
+      msgDiv.appendChild(feedbackBar);
+    }
 
     // Highlight graph path
     if (vizPath && typeof highlightPath === 'function') {
@@ -604,5 +698,82 @@ function playNextTts() {
     playNextTts();
   };
   currentAudio.play();
+}
+
+// ── Feedback ─────────────────────────────────────────────
+
+function submitFeedback(btn, type) {
+  const msgDiv = btn.closest('.chat-msg');
+  const memoryId = msgDiv && msgDiv.dataset.memoryId;
+  if (!memoryId) return;
+
+  const bar = btn.closest('.feedback-bar');
+
+  if (type === 'positive') {
+    fetch('/api/feedback', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ memoryId, type: 'positive' }),
+    }).catch(() => {});
+    bar.outerHTML = '<div class="feedback-confirmed">Thanks for the feedback</div>';
+  } else {
+    // Disable buttons while form is shown
+    bar.querySelectorAll('.feedback-btn').forEach(b => b.disabled = true);
+    showFeedbackForm(msgDiv, memoryId);
+  }
+}
+
+function showFeedbackForm(msgDiv, memoryId) {
+  const existing = msgDiv.querySelector('.feedback-form');
+  if (existing) return;
+
+  const form = document.createElement('div');
+  form.className = 'feedback-form';
+  form.innerHTML =
+    '<div style="margin-bottom:6px;font-weight:500;">What went wrong?</div>' +
+    '<label><input type="radio" name="fb-' + memoryId + '" value="wrong-answer-wrong-docs">Wrong answer, wrong documents</label>' +
+    '<label><input type="radio" name="fb-' + memoryId + '" value="wrong-answer-right-docs">Wrong answer, right documents</label>' +
+    '<label><input type="radio" name="fb-' + memoryId + '" value="right-answer-wrong-docs">Right answer, wrong documents</label>' +
+    '<label><input type="radio" name="fb-' + memoryId + '" value="incomplete-answer">Incomplete answer</label>' +
+    '<textarea placeholder="Additional details (optional)"></textarea>' +
+    '<button onclick="sendNegativeFeedback(this)">Submit</button>';
+  form.dataset.memoryId = memoryId;
+  msgDiv.appendChild(form);
+  chatMessages.scrollTop = chatMessages.scrollHeight;
+}
+
+function sendNegativeFeedback(submitBtn) {
+  const form = submitBtn.closest('.feedback-form');
+  const memoryId = form.dataset.memoryId;
+  const selected = form.querySelector('input[type="radio"]:checked');
+  if (!selected) {
+    submitBtn.textContent = 'Please select a category';
+    setTimeout(() => { submitBtn.textContent = 'Submit'; }, 1500);
+    return;
+  }
+
+  submitBtn.disabled = true;
+  submitBtn.textContent = 'Sending...';
+
+  const category = selected.value;
+  const comment = form.querySelector('textarea').value.trim() || null;
+
+  fetch('/api/feedback', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ memoryId, type: 'negative', category, comment }),
+  })
+    .then(r => r.json())
+    .then(() => {
+      const msgDiv = form.closest('.chat-msg');
+      // Remove the feedback bar too
+      const bar = msgDiv.querySelector('.feedback-bar');
+      if (bar) bar.remove();
+      form.outerHTML = '<div class="feedback-confirmed">Feedback recorded — this answer will be deprioritized</div>';
+    })
+    .catch(() => {
+      submitBtn.disabled = false;
+      submitBtn.textContent = 'Retry';
+    });
 }
 </script>

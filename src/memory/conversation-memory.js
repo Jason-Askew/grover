@@ -91,6 +91,42 @@ class ConversationMemory {
     return memory.id;
   }
 
+  recordFeedback(memoryId, type, category = null, comment = null) {
+    const mem = this.memories.find(m => m.id === memoryId);
+    if (!mem) return null;
+
+    mem.feedback = {
+      type,
+      category: category || null,
+      comment: comment || null,
+      timestamp: new Date().toISOString(),
+    };
+
+    if (type === 'positive') {
+      mem.quality = 1.0;
+    } else if (category) {
+      const qualityMap = {
+        'wrong-answer-wrong-docs': 0.1,
+        'wrong-answer-right-docs': 0.3,
+        'right-answer-wrong-docs': 0.5,
+        'incomplete-answer': 0.6,
+      };
+      mem.quality = qualityMap[category] ?? 0.3;
+    } else {
+      mem.quality = 0.3;
+    }
+
+    // Record feedback trajectory in SONA for pattern learning
+    const tb = new TrajectoryBuilder();
+    const step = tb.startStep('feedback', { memoryId, type, category });
+    tb.endStep(step, { newQuality: mem.quality });
+    const trajectory = tb.complete(mem.quality);
+    this.sona.recordTrajectory(trajectory);
+
+    this.save();
+    return mem.quality;
+  }
+
   async findRelevant(queryEmbedding, k = 3) {
     if (this.memories.length === 0) return [];
 
@@ -98,7 +134,8 @@ class ConversationMemory {
       const memEmb = mem._cachedEmbedding || (mem.embedding ? new Float32Array(mem.embedding) : null);
       if (!memEmb) return { index: i, score: 0 };
       const sim = cosineSim(queryEmbedding, memEmb);
-      return { index: i, score: sim };
+      const quality = mem.quality ?? 1.0;
+      return { index: i, score: sim * quality };
     });
 
     scored.sort((a, b) => b.score - a.score);
