@@ -177,6 +177,8 @@ sessions persist automatically (no file I/O needed). A prune timer runs
 every 5 minutes to clean up expired sessions.
 ```
 
+**API key authentication:** When `GROVER_API_KEY` is set, external services can bypass the Keycloak OIDC flow by passing `Authorization: Bearer <key>`. The optional `X-Grover-User` header provides per-caller memory isolation. Without it, all API key calls share a default `_api` identity.
+
 ### 4.5 Chat Management Flow
 
 ```

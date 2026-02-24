@@ -6,7 +6,7 @@ const DEBUG = process.env.GROVER_DEBUG === '1';
 async function rewriteQuery(query, memory) {
   if (!memory || !LLM_API_KEY) return query;
 
-  const recent = memory.getRecentHistory(4);
+  const recent = await memory.getRecentHistory(4);
   if (recent.length === 0) return query;
 
   const followUpSignals = /^(what about|how about|and for|i meant|same for|that|this|it|they|those|the same|compared to|versus|vs|but for)/i;
