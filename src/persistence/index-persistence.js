@@ -1,8 +1,9 @@
 const fs = require('fs');
 const { INDEX_DIR, META_FILE, EMBEDDINGS_FILE, GRAPH_FILE } = require('../config');
 const { KnowledgeGraph } = require('../graph/knowledge-graph');
+const { buildRvfStore, RVF_AVAILABLE } = require('./rvf-store');
 
-function saveIndex(records, dim, graph, paths = null) {
+async function saveIndex(records, dim, graph, paths = null) {
   const indexDir = paths ? paths.indexDir : INDEX_DIR;
   const metaFile = paths ? paths.metaFile : META_FILE;
   const embeddingsFile = paths ? paths.embeddingsFile : EMBEDDINGS_FILE;
@@ -29,6 +30,11 @@ function saveIndex(records, dim, graph, paths = null) {
 
   if (graph) {
     fs.writeFileSync(graphFile, JSON.stringify(graph.toJSON()));
+  }
+
+  // Build HNSW index when RVF native binaries are available
+  if (RVF_AVAILABLE && paths) {
+    await buildRvfStore(paths.rvfFile, records, dim);
   }
 
   console.log(`\nIndex saved to ${indexDir}/`);
@@ -63,7 +69,7 @@ function loadIndex(paths = null) {
     graph = KnowledgeGraph.fromJSON(JSON.parse(fs.readFileSync(graphFile, 'utf-8')));
   }
 
-  return { dim, records, graph };
+  return { dim, records, graph, rvfFile: paths ? paths.rvfFile : null };
 }
 
 function loadIndexWithFallback(paths, indexName) {

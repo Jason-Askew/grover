@@ -112,7 +112,7 @@ async function ingest(indexName = null) {
   const graph = new KnowledgeGraph();
   graph.buildFromRecords(allRecords, { domain: indexName || 'Westpac' });
 
-  saveIndex(allRecords, dim, graph, paths);
+  await saveIndex(allRecords, dim, graph, paths);
 
   // Clean up batch files
   cleanBatchFiles(indexDir, batches.length);

@@ -4,7 +4,7 @@ const path = require('path');
 const http = require('http');
 const { ReasoningBank, SonaCoordinator } = require('@ruvector/ruvllm');
 const { PollyClient, SynthesizeSpeechCommand } = require('@aws-sdk/client-polly');
-const { LLM_MODEL, LLM_BASE_URL, POLLY_REGION, POLLY_VOICE, POLLY_ENGINE, CORS_ORIGIN, resolveIndex, listIndexes } = require('../config');
+const { LLM_MODEL, LLM_BASE_URL, POLLY_REGION, POLLY_VOICE, POLLY_ENGINE, CORS_ORIGIN, SESSION_FILE, resolveIndex, listIndexes } = require('../config');
 const { loadIndex, loadIndexWithFallback } = require('../persistence/index-persistence');
 const { retrieve } = require('../retrieval/retrieve');
 const { ragAnswer, ragAnswerStream } = require('../llm/rag');
@@ -12,7 +12,8 @@ const { FeedbackIndex } = require('../memory/feedback-index');
 const { ChatManager } = require('../memory/chat-manager');
 const { buildVizData } = require('../server/viz-builder');
 const { buildCitedVizPath } = require('../server/viz-path');
-const { getAuthConfig, handleAuthRoute, requireAuth, getSession } = require('../server/auth');
+const { getAuthConfig, initSessionStore, getSessionStore, handleAuthRoute, requireAuth, getSession } = require('../server/auth');
+const { openRvfStoreForQuery, closeRvfStore } = require('../persistence/rvf-store');
 const { handleAdminRoute } = require('../server/admin-api');
 const { UsageTracker } = require('../llm/usage-tracker');
 
@@ -36,6 +37,12 @@ async function serve(port = 3000, indexName = null) {
   await rv.initOnnxEmbedder();
 
   const authConfig = getAuthConfig();
+  if (authConfig) initSessionStore(SESSION_FILE);
+
+  // Open RVF HNSW store if available
+  let rvfStore = await openRvfStoreForQuery(paths.rvfFile);
+  if (rvfStore) console.log(`  HNSW: active (vectors.rvf)`);
+  else console.log(`  HNSW: inactive (brute-force search)`);
 
   // Mutable server state
   let currentName = activeName;
@@ -159,7 +166,11 @@ async function serve(port = 3000, indexName = null) {
         const newIndex = loadIndexWithFallback(newPaths, newName);
         if (!newIndex) { res.writeHead(404, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: `Index "${newName}" not found` })); return; }
 
+        // Close old RVF store before switching
+        if (rvfStore) { await closeRvfStore(rvfStore); rvfStore = null; }
+
         currentName = newName; currentIndex = newIndex; currentPaths = newPaths;
+        rvfStore = await openRvfStoreForQuery(newPaths.rvfFile);
         feedbackIndex = new FeedbackIndex(newPaths.indexDir);
         userChatManagers.clear();
         currentVizData = buildVizData(currentIndex.graph);
@@ -247,7 +258,7 @@ async function serve(port = 3000, indexName = null) {
         mgr.autoTitle(cid, query);
         mgr.touchChat(cid);
         console.log(`[ask][${currentName}][${user.userId}] ${query}`);
-        const { results, path: graphPath, mode, queryVec } = await retrieve(query, currentIndex, { k: 8, graphMode: true, memory });
+        const { results, path: graphPath, mode, queryVec } = await retrieve(query, currentIndex, { k: 8, graphMode: true, memory, rvfStore });
         const { answer, sources, memoryId, usage } = await ragAnswer(query, results, memory, { stream: false, queryVec, domain: currentName });
         usageTracker.record(user.userId, LLM_MODEL, usage);
         const vizPath = buildCitedVizPath(currentIndex.graph, sources, currentVizData);
@@ -275,7 +286,7 @@ async function serve(port = 3000, indexName = null) {
         mgr.autoTitle(cid, query);
         mgr.touchChat(cid);
         console.log(`[ask-stream][${currentName}][${user.userId}] ${query}`);
-        const { results, path: graphPath, mode, queryVec } = await retrieve(query, currentIndex, { k: 8, graphMode: true, memory });
+        const { results, path: graphPath, mode, queryVec } = await retrieve(query, currentIndex, { k: 8, graphMode: true, memory, rvfStore });
 
         res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', 'Connection': 'keep-alive' });
         const sources = results.map((r, i) => ({
@@ -401,6 +412,8 @@ async function serve(port = 3000, indexName = null) {
 
   function shutdown() {
     console.log('\nShutting down server...');
+    if (authConfig) getSessionStore().shutdown();
+    if (rvfStore) closeRvfStore(rvfStore).catch(() => {});
     server.close(() => { console.log('Server closed.'); process.exit(0); });
     setTimeout(() => process.exit(1), 5000);
   }

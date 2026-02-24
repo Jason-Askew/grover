@@ -10,10 +10,10 @@ Grover is a document search and RAG (Retrieval-Augmented Generation) system desi
 |-----------|-------------|
 | **Document Ingestion** | Extracts text from PDFs and Markdown, splits into page-aware chunks, generates ONNX vector embeddings via batch child processes |
 | **Knowledge Graph** | Builds an in-memory graph of brands, categories, documents, entities, and their relationships |
-| **Semantic Search** | Brute-force cosine distance search over 384-dimensional embeddings, boosted by graph traversal |
+| **Semantic Search** | HNSW approximate nearest neighbor search (via RVF persistent store) with brute-force cosine fallback, boosted by graph traversal |
 | **Domain-Aware RAG** | Retrieves relevant chunks, constructs context with conversation history, generates cited answers via LLM with domain-specific system prompts |
 | **Conversation Memory** | Persists Q&A history per chat (capped at 200 memories), finds relevant past interactions by embedding similarity weighted by feedback quality, rewrites follow-up queries |
-| **Authentication** | Keycloak OIDC with PKCE flow, JWKS validation, server-side sessions, role-based access control |
+| **Authentication** | Keycloak OIDC with PKCE flow, JWKS validation, file-backed persistent sessions, role-based access control |
 | **Chat Management** | Per-user multi-chat isolation with auto-titling, rename, delete, and legacy migration |
 | **Admin Panel** | User management via Keycloak Admin REST API, token usage statistics dashboard |
 | **Usage Tracking** | Per-user and per-model token counting with cost estimation, persisted to disk |
@@ -89,10 +89,11 @@ Page-aware chunks (1000 char, 200 overlap)
     │       • Entity co-occurrence edges (cross-document)
     │       • Semantic similarity edges (cosine > 0.85)
     │
-    └──▶ saveIndex()
+    └──▶ await saveIndex()
             • embeddings.bin  (Float32, ~19 MB for 13,000+ chunks)
             • metadata.json   (chunk text, file paths, page ranges)
             • graph.json      (serialized graph)
+            • vectors.rvf     (HNSW persistent store, ~20 MB — built when RVF native binaries available)
 ```
 
 ### 4.2 Retrieval Pipeline
@@ -106,7 +107,12 @@ Standalone search query
     ▼  ruvector ONNX embed
 384d query vector
     │
-    ▼  vectorSearch() — brute-force cosine distance
+    ├── [RVF store available] ──▶ queryRvfStore() — HNSW approximate nearest neighbor
+    │                               • efSearch: 64, cosine metric
+    │                               • IDs are string-encoded array indices → map back to records[]
+    │
+    └── [RVF unavailable] ─────▶ vectorSearch() — brute-force cosine distance (fallback)
+    │
 Top-k vector results (sorted by distance, lower = better)
     │
     ▼  KnowledgeGraph.expandResults() — 2-hop traversal
@@ -114,6 +120,8 @@ Combined results: vectorScore - (graphScore * 0.15)
     │
     ▼  ragAnswer() — format context, call LLM with domain-aware prompt + memory
 Cited answer + source references
+
+Mode labels: "hnsw+graph" | "hnsw" | "vector+graph" | "vector"
 ```
 
 ### 4.3 Conversation Memory Flow
@@ -158,6 +166,11 @@ Browser → GET /
                     Server validates JWT via JWKS → creates session → sets HttpOnly cookie
                     │
                     ▼  Reload page → session cookie present → authenticated
+
+Sessions are persisted to sessions.json (file-backed SessionStore). On server
+restart, sessions are reloaded from disk (expired entries filtered). A prune
+timer runs every 5 minutes to clean up expired sessions. Graceful shutdown
+writes any dirty state before exit.
 ```
 
 ### 4.5 Chat Management Flow
@@ -205,9 +218,15 @@ User clicks 👍 or 👎 on an answer
 
 ## 5. Key Design Decisions
 
-### 5.1 Brute-Force Vector Search (not ANN)
+### 5.1 HNSW Vector Search with Brute-Force Fallback
 
-At 384 dimensions x 6,220 records, brute-force cosine distance takes <50ms in pure JS. This avoids the overhead of building and maintaining an approximate nearest neighbor index while providing exact results.
+Vector search uses a two-tier strategy:
+
+1. **HNSW (primary)**: When ruvector's RVF native binaries are available (`rv.isRvfAvailable() === true`), ingestion builds a persistent HNSW index (`vectors.rvf`) alongside the flat embeddings file. At query time, `queryRvfStore()` performs approximate nearest neighbor search with `efSearch: 64` and cosine metric. RVF IDs are string-encoded array indices (e.g., `"42"` → `records[42]`).
+
+2. **Brute-force (fallback)**: When RVF is unavailable (missing native binaries or no `.rvf` file), search falls back to `vectorSearch()` — brute-force cosine distance over all records. At 384d x 13,000+ records this takes <100ms in pure JS.
+
+All RVF code is behind `RVF_AVAILABLE` guards, making HNSW a transparent upgrade with zero configuration. The HNSW store is built during ingestion in batches of 1,000 vectors with `m: 16` and `efConstruction: 200`.
 
 ### 5.2 Knowledge Graph Augmentation
 
@@ -268,6 +287,8 @@ Feedback is indexed by a hash of the query + sorted source files, not by memory 
 | Dependency | Purpose | Required For |
 |-----------|---------|-------------|
 | `ruvector` | Rust/NAPI vector DB with ONNX embedding | All operations |
+| `@ruvector/rvf` | RVF persistent HNSW store (JS bindings) | HNSW search (optional) |
+| `@ruvector/rvf-node` | RVF native binaries (linux-x64-gnu, darwin-x64, darwin-arm64) | HNSW search (optional) |
 | `@ruvector/ruvllm` | ReasoningBank, SONA coordinator, trajectories | Conversation memory |
 | `jose` | JWT verification and JWKS key set management | Authentication (lazy-loaded) |
 | `@aws-sdk/client-polly` | Amazon Polly text-to-speech | Voice output (optional) |
@@ -279,9 +300,9 @@ Feedback is indexed by a hash of the query + sorted source files, not by memory 
 
 Grover runs as a single-process Node.js application for search and serving. Ingestion spawns short-lived child processes for embedding but is otherwise self-contained. There is no database server, message queue, or container orchestration — all state is stored in flat files under `./index/`. This makes it suitable for local or small-team use on a single machine.
 
-A `docker-compose.yml` is provided for running Keycloak locally for development. In production, Keycloak should be deployed separately.
+A `docker-compose.yml` is provided for running Grover + Keycloak as a full stack with Docker Compose. Volumes mount `./corpus` (read-only), `./index` (read-write), and `./config` (read-only). The `./index` volume persists all generated data including sessions (`sessions.json`) and HNSW stores (`vectors.rvf`). Keycloak must pass its healthcheck before Grover starts.
 
-The web server supports graceful shutdown via SIGTERM/SIGINT and handles client disconnects during SSE streaming. Debug logging is available via `GROVER_DEBUG=1`.
+The web server supports graceful shutdown via SIGTERM/SIGINT: saves dirty sessions, closes RVF stores, and handles client disconnects during SSE streaming. On restart, sessions are reloaded from disk so users do not need to re-authenticate. Debug logging is available via `GROVER_DEBUG=1`.
 
 ## 8. Operational Characteristics
 
@@ -291,9 +312,12 @@ The web server supports graceful shutdown via SIGTERM/SIGINT and handles client 
 | WASM memory per batch | ~4GB (isolated in child process) |
 | Batch size | 500 files per child process |
 | Typical ingestion | ~2,400 files → ~13,000 chunks in ~30 minutes |
-| Index size | ~20MB embeddings + ~20MB metadata + ~18MB graph |
+| Index size | ~20MB embeddings + ~20MB metadata + ~18MB graph + ~20MB HNSW store |
+| HNSW build | ~13,000 vectors in 5 batches of 1,000 (m=16, efConstruction=200) |
 | Memory cap | 200 conversation memories per chat with LRU eviction |
-| Search latency | <50ms for brute-force cosine over 13,000 chunks |
+| Search latency (HNSW) | Sub-millisecond HNSW ANN over 13,000 chunks (efSearch=64) |
+| Search latency (fallback) | <100ms brute-force cosine over 13,000 chunks |
+| Session persistence | File-backed sessions with 5-minute prune interval, survives restarts |
 | SA categories | 33 categories with 100% coverage via filename inference |
 | SA vocabulary | ~55 payment types, ~74 government concepts |
 | Westpac vocabulary | 23 product types, 28 financial concepts, 4 brands, 4 categories |

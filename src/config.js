@@ -8,6 +8,7 @@ const META_FILE = path.join(INDEX_DIR, 'metadata.json');
 const EMBEDDINGS_FILE = path.join(INDEX_DIR, 'embeddings.bin');
 const GRAPH_FILE = path.join(INDEX_DIR, 'graph.json');
 const MEMORY_FILE = path.join(INDEX_DIR, 'memory.json');
+const SESSION_FILE = process.env.SESSION_FILE || path.join(INDEX_DIR, 'sessions.json');
 
 const LLM_API_KEY = process.env.OPENAI_API_KEY || '';
 const LLM_BASE_URL = process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1';
@@ -36,6 +37,7 @@ function resolveIndex(name) {
     embeddingsFile: path.join(indexDir, 'embeddings.bin'),
     graphFile: path.join(indexDir, 'graph.json'),
     memoryFile: path.join(indexDir, 'memory.json'),
+    rvfFile: path.join(indexDir, 'vectors.rvf'),
   };
 }
 
@@ -63,7 +65,7 @@ function listIndexes() {
 }
 
 module.exports = {
-  DOCS_DIR, INDEX_DIR, META_FILE, EMBEDDINGS_FILE, GRAPH_FILE, MEMORY_FILE,
+  DOCS_DIR, INDEX_DIR, META_FILE, EMBEDDINGS_FILE, GRAPH_FILE, MEMORY_FILE, SESSION_FILE,
   LLM_API_KEY, LLM_BASE_URL, LLM_MODEL, POLLY_REGION, POLLY_VOICE, POLLY_ENGINE,
   KEYCLOAK_URL, KEYCLOAK_REALM, KEYCLOAK_CLIENT_ID, AUTH_SESSION_TTL,
   KEYCLOAK_PUBLIC_URL, KEYCLOAK_ADMIN_USER, KEYCLOAK_ADMIN_PASSWORD,

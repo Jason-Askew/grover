@@ -8,11 +8,11 @@ Designed for multi-domain document corpora. Ships with domain vocabularies for W
 
 - **PDF and Markdown ingestion** with page-aware chunking and local ONNX embeddings (no external API for embeddings)
 - **Knowledge graph** linking brands, categories, documents, products, and domain concepts
-- **Hybrid search** combining vector cosine similarity with graph traversal expansion
+- **Hybrid search** combining HNSW approximate nearest neighbor search (with brute-force cosine fallback) and graph traversal expansion
 - **RAG Q&A** with inline source citations and streaming responses
 - **Adaptive conversation memory** with SONA trajectory tracking, pattern learning, and semantic retrieval of past interactions
 - **Multi-index support** — isolated indexes per corpus with runtime switching
-- **Keycloak OIDC authentication** — PKCE flow with JWKS validation, server-side sessions, role-based access
+- **Keycloak OIDC authentication** — PKCE flow with JWKS validation, file-backed persistent sessions, role-based access
 - **Multi-chat management** — per-user chat isolation, auto-titling, chat switching, rename, delete
 - **Admin panel** — user management (CRUD via Keycloak Admin REST API), usage statistics dashboard
 - **Usage tracking** — per-user and per-model token counting with cost estimation
@@ -68,6 +68,7 @@ export KEYCLOAK_URL=http://localhost:8080
 export KEYCLOAK_REALM=grover             # default: grover
 export KEYCLOAK_CLIENT_ID=grover-web     # default: grover-web
 export AUTH_SESSION_TTL=86400000         # default: 24h in ms
+export SESSION_FILE=./index/sessions.json  # default: ./index/sessions.json
 export KEYCLOAK_ADMIN_USER=admin         # for admin panel user management
 export KEYCLOAK_ADMIN_PASSWORD=admin
 
@@ -176,13 +177,13 @@ node grover.js stats
 
 1. **Ingest** — PDFs/Markdown in `./corpus/` are extracted, split into overlapping 1000-char chunks (200 overlap), embedded using a local ONNX model (all-MiniLM-L6-v2, 384d), and organized into a knowledge graph. Embedding is performed in batch child processes to isolate the ONNX WASM runtime's memory from the parent process.
 
-2. **Search** — Query is embedded with the same model and compared via brute-force cosine distance against all chunks. The knowledge graph expands results by following entity co-occurrence and semantic similarity edges across documents. Graph boost is capped at 30% of the vector score range.
+2. **Search** — Query is embedded with the same model. When an HNSW persistent store (`vectors.rvf`) is available, approximate nearest neighbor search is used via `@ruvector/rvf` (sub-millisecond for 13K+ chunks). Otherwise, brute-force cosine distance is used as a fallback. The knowledge graph then expands results by following entity co-occurrence and semantic similarity edges across documents. Graph boost is capped at 30% of the vector score range. Search mode labels: `hnsw+graph` | `hnsw` | `vector+graph` | `vector`.
 
 3. **RAG** — Retrieved chunks are formatted as numbered sources, combined with relevant past interactions from conversation memory (quality-weighted by feedback), and sent to an LLM with a domain-aware system prompt (customized per index) for answer generation with inline citations.
 
 4. **Memory & Learning** — Each Q&A interaction is stored with its query embedding (capped at 200 memories with LRU eviction). On subsequent queries, semantically similar past interactions (cosine similarity > 0.5, weighted by feedback quality) are retrieved and included in LLM context. Follow-up queries are automatically rewritten into standalone searches via the LLM. Negative feedback annotations are surfaced to the LLM to avoid repeating issues.
 
-5. **Authentication** — When `KEYCLOAK_URL` is set, the browser performs a PKCE-based OIDC flow. The server validates the id_token against Keycloak's JWKS endpoint, creates a server-side session, and sets an HttpOnly cookie. All API endpoints check the session. When auth is disabled, all requests proceed as an anonymous user.
+5. **Authentication** — When `KEYCLOAK_URL` is set, the browser performs a PKCE-based OIDC flow. The server validates the id_token against Keycloak's JWKS endpoint, creates a server-side session (persisted to `sessions.json`), and sets an HttpOnly cookie. Sessions survive server restarts — on startup, sessions are reloaded from disk with expired entries filtered. A prune timer runs every 5 minutes to clean up. All API endpoints check the session. When auth is disabled, all requests proceed as an anonymous user.
 
 ### Adaptive learning
 
@@ -311,8 +312,10 @@ src/
     conversation-memory.js Conversation memory with SONA trajectories and feedback
     chat-manager.js        Per-user multi-chat isolation, auto-titling, legacy migration
     feedback-index.js      Content-keyed shared feedback index with quality scoring
-  persistence/             Index save/load (binary embeddings + JSON)
-  retrieval/               Vector search and hybrid retrieval pipeline
+  persistence/
+    index-persistence.js   Index save/load (binary embeddings + JSON + HNSW build)
+    rvf-store.js           HNSW persistent store wrapper (build, open, query, close)
+  retrieval/               HNSW/vector search and hybrid retrieval pipeline
   llm/
     client.js              OpenAI-compatible HTTP client (streaming + non-streaming)
     query-rewrite.js       Follow-up query expansion via LLM

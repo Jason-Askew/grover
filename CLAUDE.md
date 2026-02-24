@@ -68,6 +68,7 @@ There is no build step, no linter, and no test suite configured.
 - `KEYCLOAK_REALM` — Keycloak realm name (default: `grover`)
 - `KEYCLOAK_CLIENT_ID` — Keycloak client ID (default: `grover-web`)
 - `AUTH_SESSION_TTL` — Session TTL in ms (default: `86400000` / 24h)
+- `SESSION_FILE` — Override session persistence file path (default: `./index/sessions.json`)
 - `CORS_ORIGIN` — Override CORS allowed origin (default: `http://localhost:<port>`)
 
 ## Architecture
@@ -75,12 +76,13 @@ There is no build step, no linter, and no test suite configured.
 ### Data Flow
 
 1. **Ingest**: PDFs in `./corpus` → Python (`pymupdf`) text extraction → page-aware chunking (1000 char, 200 overlap) → ONNX embeddings via `ruvector` → knowledge graph construction → persisted to `./index/`
-2. **Search**: Query → ONNX embedding → brute-force cosine distance against all chunks → knowledge graph expansion (entity co-occurrence, cross-doc similarity) → ranked results
+2. **Search**: Query → ONNX embedding → HNSW approximate nearest neighbor search (via RVF persistent store, with brute-force cosine fallback) → knowledge graph expansion (entity co-occurrence, cross-doc similarity) → ranked results
 3. **RAG**: Search results → formatted context + conversation memory → OpenAI-compatible chat completion → answer with source citations
 
 ### Key Dependencies
 
-- **`ruvector`** — Rust/NAPI vector database with ONNX embedding support. Used for `rv.initOnnxEmbedder()`, `rv.embed()`, `rv.getDimension()`. The actual search uses a custom brute-force implementation (not the DB's search), operating directly on Float32Arrays.
+- **`ruvector`** — Rust/NAPI vector database with ONNX embedding support. Used for `rv.initOnnxEmbedder()`, `rv.embed()`, `rv.getDimension()`, and RVF HNSW store operations.
+- **`@ruvector/rvf`** + **`@ruvector/rvf-node`** — Persistent HNSW store for approximate nearest neighbor search. Builds `vectors.rvf` during ingestion; falls back to brute-force when native binaries are unavailable.
 - **`@ruvector/ruvllm`** — Provides `ReasoningBank` (embedding storage/retrieval), `SonaCoordinator` (trajectory recording/pattern learning), and `TrajectoryBuilder` (step-based trajectory tracking). Used for conversation memory.
 - **`pymupdf`** (Python) — PDF text extraction, invoked via `child_process.execSync`. Python 3 with pymupdf must be installed.
 - **`jose`** — JWT/JWKS validation for Keycloak OIDC authentication.
@@ -109,7 +111,7 @@ src/                — Modular source code (config, utils, graph, memory, llm, 
 graph-viz.html      — vis-network graph visualization template (served by web UI)
 corpus/             — Source PDFs organized by brand/category (corpus/Westpac/{bom,bsa,sgb,wbc}/{fx,irrm,...}/)
 docs/               — System documentation (design docs)
-index/              — Generated index files (embeddings.bin, metadata.json, graph.json, chats.json, etc.)
+index/              — Generated index files (embeddings.bin, metadata.json, graph.json, vectors.rvf, sessions.json, chats.json, etc.)
 config/             — External configuration (docker-compose for Keycloak)
 Dockerfile          — Multi-stage Docker build (Node 22 + Python 3 + pymupdf)
 docker-compose.yml  — Full stack: Grover + Keycloak with healthchecks and networking
