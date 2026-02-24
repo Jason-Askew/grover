@@ -56,7 +56,7 @@ async function buildRagContext(query, results, memory, queryVec, domain) {
         }).join('\n\n');
     }
 
-    const recent = memory.getRecentHistory(6);
+    const recent = await memory.getRecentHistory(6);
     if (recent.length > 0) {
       historyMessages = recent.map(h => ({ role: h.role, content: h.content }));
     }

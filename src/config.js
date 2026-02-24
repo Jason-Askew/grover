@@ -4,11 +4,9 @@ const fs = require('fs');
 const PROJECT_ROOT = path.resolve(__dirname, '..');
 const DOCS_DIR = path.join(PROJECT_ROOT, 'corpus');
 const INDEX_DIR = path.join(PROJECT_ROOT, 'index');
-const META_FILE = path.join(INDEX_DIR, 'metadata.json');
-const EMBEDDINGS_FILE = path.join(INDEX_DIR, 'embeddings.bin');
-const GRAPH_FILE = path.join(INDEX_DIR, 'graph.json');
-const MEMORY_FILE = path.join(INDEX_DIR, 'memory.json');
-const SESSION_FILE = process.env.SESSION_FILE || path.join(INDEX_DIR, 'sessions.json');
+
+// PostgreSQL
+const DATABASE_URL = process.env.DATABASE_URL || 'postgres://grover:grover@localhost:5432/grover';
 
 const LLM_API_KEY = process.env.OPENAI_API_KEY || '';
 const LLM_BASE_URL = process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1';
@@ -33,11 +31,6 @@ function resolveIndex(name) {
     name,
     docsDir: path.join(DOCS_DIR, name),
     indexDir,
-    metaFile: path.join(indexDir, 'metadata.json'),
-    embeddingsFile: path.join(indexDir, 'embeddings.bin'),
-    graphFile: path.join(indexDir, 'graph.json'),
-    memoryFile: path.join(indexDir, 'memory.json'),
-    rvfFile: path.join(indexDir, 'vectors.rvf'),
   };
 }
 
@@ -45,30 +38,30 @@ function listIndexes() {
   const indexes = [];
   if (!fs.existsSync(INDEX_DIR)) return indexes;
 
-  // Check for named index subdirs (contain metadata.json)
   for (const entry of fs.readdirSync(INDEX_DIR, { withFileTypes: true })) {
     if (entry.isDirectory() && !entry.name.startsWith('.')) {
-      const metaPath = path.join(INDEX_DIR, entry.name, 'metadata.json');
-      if (fs.existsSync(metaPath)) {
-        indexes.push(entry.name);
-      }
+      indexes.push(entry.name);
     }
-  }
-
-  // Legacy: if index/metadata.json exists but no named dirs contain it,
-  // treat root index as "Westpac"
-  if (indexes.length === 0 && fs.existsSync(path.join(INDEX_DIR, 'metadata.json'))) {
-    indexes.push('Westpac');
   }
 
   return indexes;
 }
 
+/**
+ * List indexes from PostgreSQL (used when DATABASE_URL is set).
+ */
+async function listIndexesPg() {
+  const db = require('./persistence/db');
+  const { rows } = await db.query('SELECT DISTINCT index_name FROM documents ORDER BY index_name');
+  return rows.map(r => r.index_name);
+}
+
 module.exports = {
-  DOCS_DIR, INDEX_DIR, META_FILE, EMBEDDINGS_FILE, GRAPH_FILE, MEMORY_FILE, SESSION_FILE,
+  DOCS_DIR, INDEX_DIR,
+  DATABASE_URL,
   LLM_API_KEY, LLM_BASE_URL, LLM_MODEL, POLLY_REGION, POLLY_VOICE, POLLY_ENGINE,
   KEYCLOAK_URL, KEYCLOAK_REALM, KEYCLOAK_CLIENT_ID, AUTH_SESSION_TTL,
   KEYCLOAK_PUBLIC_URL, KEYCLOAK_ADMIN_USER, KEYCLOAK_ADMIN_PASSWORD,
   CORS_ORIGIN,
-  resolveIndex, listIndexes,
+  resolveIndex, listIndexes, listIndexesPg,
 };

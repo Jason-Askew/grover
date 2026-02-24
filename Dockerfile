@@ -8,9 +8,9 @@ RUN npm ci --omit=dev || npm install --omit=dev
 FROM node:22-bookworm-slim
 WORKDIR /app
 
-# Install Python 3 + pymupdf for PDF text extraction
+# Install Python 3 + pymupdf for PDF text extraction, postgresql-client for bootstrap
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends python3 python3-pip && \
+    apt-get install -y --no-install-recommends python3 python3-pip postgresql-client && \
     pip3 install --no-cache-dir --break-system-packages pymupdf && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
@@ -25,6 +25,7 @@ COPY package.json ./
 COPY grover.js ./
 COPY graph-viz.html ./
 COPY src/ ./src/
+COPY config/ ./config/
 
 # Create mount-point directories (owned by grover user)
 RUN mkdir -p /app/corpus /app/index /app/config && \

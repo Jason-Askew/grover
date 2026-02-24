@@ -1,4 +1,4 @@
-const fs = require('fs');
+const db = require('../persistence/db');
 
 const MODEL_PRICING = {
   'gpt-4o-mini':  { input: 0.00015, output: 0.0006 },
@@ -6,82 +6,97 @@ const MODEL_PRICING = {
   'gpt-4-turbo':  { input: 0.01,    output: 0.03 },
 };
 
-const MAX_RECENT = 100;
-
 class UsageTracker {
-  constructor(filePath) {
-    this.filePath = filePath;
-    this.totals = { promptTokens: 0, completionTokens: 0, totalTokens: 0, requests: 0, estimatedCost: 0 };
-    this.byUser = {};
-    this.byModel = {};
-    this.recent = [];
-    this.load();
+  constructor() {
+    // No file I/O needed — PostgreSQL-backed
   }
 
-  record(userId, model, usage) {
+  async record(userId, model, usage) {
     if (!usage) {
       console.log('[usage-tracker] No usage data returned by LLM');
       return;
     }
     const prompt = usage.prompt_tokens || 0;
     const completion = usage.completion_tokens || 0;
-    const total = usage.total_tokens || (prompt + completion);
     const cost = this._estimateCost(model, prompt, completion);
 
-    this._accumulate(this.totals, prompt, completion, total, cost);
+    await db.query(
+      `INSERT INTO usage_stats (user_id, model, prompt_tokens, completion_tokens, cost)
+       VALUES ($1, $2, $3, $4, $5)`,
+      [userId || '_anonymous', model, prompt, completion, cost]
+    );
 
-    const uid = userId || '_anonymous';
-    if (!this.byUser[uid]) this.byUser[uid] = { promptTokens: 0, completionTokens: 0, totalTokens: 0, requests: 0, estimatedCost: 0 };
-    this._accumulate(this.byUser[uid], prompt, completion, total, cost);
-
-    if (!this.byModel[model]) this.byModel[model] = { promptTokens: 0, completionTokens: 0, totalTokens: 0, requests: 0, estimatedCost: 0 };
-    this._accumulate(this.byModel[model], prompt, completion, total, cost);
-
-    this.recent.push({ timestamp: new Date().toISOString(), userId: uid, model, promptTokens: prompt, completionTokens: completion, cost });
-    if (this.recent.length > MAX_RECENT) this.recent = this.recent.slice(-MAX_RECENT);
-
-    console.log(`[usage] ${uid} ${model}: ${prompt}+${completion}=${total} tokens, $${cost.toFixed(4)}`);
-    this.save();
+    console.log(`[usage] ${userId || '_anonymous'} ${model}: ${prompt}+${completion}=${prompt + completion} tokens, $${cost.toFixed(4)}`);
   }
 
-  getStats() {
-    return {
-      totals: this.totals,
-      byUser: this.byUser,
-      byModel: this.byModel,
-      recent: this.recent,
+  async getStats() {
+    const [totalsRes, byUserRes, byModelRes, recentRes] = await Promise.all([
+      db.query(`SELECT
+        COALESCE(SUM(prompt_tokens), 0) AS prompt_tokens,
+        COALESCE(SUM(completion_tokens), 0) AS completion_tokens,
+        COALESCE(SUM(prompt_tokens + completion_tokens), 0) AS total_tokens,
+        COUNT(*) AS requests,
+        COALESCE(SUM(cost), 0) AS estimated_cost
+        FROM usage_stats`),
+      db.query(`SELECT user_id,
+        SUM(prompt_tokens) AS prompt_tokens,
+        SUM(completion_tokens) AS completion_tokens,
+        SUM(prompt_tokens + completion_tokens) AS total_tokens,
+        COUNT(*) AS requests,
+        SUM(cost) AS estimated_cost
+        FROM usage_stats GROUP BY user_id`),
+      db.query(`SELECT model,
+        SUM(prompt_tokens) AS prompt_tokens,
+        SUM(completion_tokens) AS completion_tokens,
+        SUM(prompt_tokens + completion_tokens) AS total_tokens,
+        COUNT(*) AS requests,
+        SUM(cost) AS estimated_cost
+        FROM usage_stats GROUP BY model`),
+      db.query(`SELECT created_at AS timestamp, user_id, model, prompt_tokens, completion_tokens, cost
+        FROM usage_stats ORDER BY created_at DESC LIMIT 100`),
+    ]);
+
+    const t = totalsRes.rows[0];
+    const totals = {
+      promptTokens: Number(t.prompt_tokens),
+      completionTokens: Number(t.completion_tokens),
+      totalTokens: Number(t.total_tokens),
+      requests: Number(t.requests),
+      estimatedCost: Number(t.estimated_cost),
     };
-  }
 
-  save() {
-    try {
-      const data = { totals: this.totals, byUser: this.byUser, byModel: this.byModel, recent: this.recent };
-      fs.writeFileSync(this.filePath, JSON.stringify(data, null, 2));
-    } catch (e) {
-      console.error('[usage-tracker] Save failed:', e.message);
+    const byUser = {};
+    for (const r of byUserRes.rows) {
+      byUser[r.user_id] = {
+        promptTokens: Number(r.prompt_tokens),
+        completionTokens: Number(r.completion_tokens),
+        totalTokens: Number(r.total_tokens),
+        requests: Number(r.requests),
+        estimatedCost: Number(r.estimated_cost),
+      };
     }
-  }
 
-  load() {
-    try {
-      if (fs.existsSync(this.filePath)) {
-        const data = JSON.parse(fs.readFileSync(this.filePath, 'utf-8'));
-        if (data.totals) this.totals = data.totals;
-        if (data.byUser) this.byUser = data.byUser;
-        if (data.byModel) this.byModel = data.byModel;
-        if (data.recent) this.recent = data.recent;
-      }
-    } catch (e) {
-      console.error('[usage-tracker] Load failed:', e.message);
+    const byModel = {};
+    for (const r of byModelRes.rows) {
+      byModel[r.model] = {
+        promptTokens: Number(r.prompt_tokens),
+        completionTokens: Number(r.completion_tokens),
+        totalTokens: Number(r.total_tokens),
+        requests: Number(r.requests),
+        estimatedCost: Number(r.estimated_cost),
+      };
     }
-  }
 
-  _accumulate(target, prompt, completion, total, cost) {
-    target.promptTokens += prompt;
-    target.completionTokens += completion;
-    target.totalTokens += total;
-    target.requests += 1;
-    target.estimatedCost += cost;
+    const recent = recentRes.rows.map(r => ({
+      timestamp: r.timestamp,
+      userId: r.user_id,
+      model: r.model,
+      promptTokens: r.prompt_tokens,
+      completionTokens: r.completion_tokens,
+      cost: r.cost,
+    }));
+
+    return { totals, byUser, byModel, recent };
   }
 
   _estimateCost(model, promptTokens, completionTokens) {

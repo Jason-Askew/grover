@@ -66,8 +66,6 @@ function httpRequest(url, method, body, headers) {
       res.on('data', chunk => { data += chunk; });
       res.on('end', () => {
         if (res.statusCode === 204 || res.statusCode === 201) {
-          // 201 Created for user creation (Location header, no body usually)
-          // 204 No Content for updates/deletes
           if (data) {
             try { resolve(JSON.parse(data)); } catch { resolve(null); }
           } else {
@@ -100,17 +98,18 @@ async function handleAdminRoute(req, res, config, readBody, usageTracker) {
 
   // GET /api/admin/usage — token usage stats
   if (req.method === 'GET' && url.pathname === '/api/admin/usage') {
-    const user = requireAdmin(req, res, config);
+    const user = await requireAdmin(req, res, config);
     if (!user) return true;
 
+    const stats = usageTracker ? await usageTracker.getStats() : { totals: {}, byUser: {}, byModel: {}, recent: [] };
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify(usageTracker ? usageTracker.getStats() : { totals: {}, byUser: {}, byModel: {}, recent: [] }));
+    res.end(JSON.stringify(stats));
     return true;
   }
 
   // GET /admin — serve admin panel HTML
   if (req.method === 'GET' && url.pathname === '/admin') {
-    const user = requireAdmin(req, res, config);
+    const user = await requireAdmin(req, res, config);
     if (!user) return true;
 
     const html = fs.readFileSync(path.join(__dirname, 'admin-panel.html'), 'utf-8');
@@ -121,7 +120,7 @@ async function handleAdminRoute(req, res, config, readBody, usageTracker) {
 
   // GET /api/admin/users — list users
   if (req.method === 'GET' && url.pathname === '/api/admin/users') {
-    const user = requireAdmin(req, res, config);
+    const user = await requireAdmin(req, res, config);
     if (!user) return true;
 
     try {
@@ -138,7 +137,7 @@ async function handleAdminRoute(req, res, config, readBody, usageTracker) {
 
   // POST /api/admin/users — create user
   if (req.method === 'POST' && url.pathname === '/api/admin/users') {
-    const user = requireAdmin(req, res, config);
+    const user = await requireAdmin(req, res, config);
     if (!user) return true;
 
     try {
@@ -175,7 +174,7 @@ async function handleAdminRoute(req, res, config, readBody, usageTracker) {
   // PUT /api/admin/users/:id — update user
   const putMatch = req.method === 'PUT' && url.pathname.match(/^\/api\/admin\/users\/([a-f0-9-]+)$/);
   if (putMatch) {
-    const user = requireAdmin(req, res, config);
+    const user = await requireAdmin(req, res, config);
     if (!user) return true;
     const userId = putMatch[1];
 
@@ -196,7 +195,7 @@ async function handleAdminRoute(req, res, config, readBody, usageTracker) {
   // POST /api/admin/users/:id/reset-password — reset password
   const pwMatch = req.method === 'POST' && url.pathname.match(/^\/api\/admin\/users\/([a-f0-9-]+)\/reset-password$/);
   if (pwMatch) {
-    const user = requireAdmin(req, res, config);
+    const user = await requireAdmin(req, res, config);
     if (!user) return true;
     const userId = pwMatch[1];
 
@@ -224,7 +223,7 @@ async function handleAdminRoute(req, res, config, readBody, usageTracker) {
   // DELETE /api/admin/users/:id — delete user
   const delMatch = req.method === 'DELETE' && url.pathname.match(/^\/api\/admin\/users\/([a-f0-9-]+)$/);
   if (delMatch) {
-    const user = requireAdmin(req, res, config);
+    const user = await requireAdmin(req, res, config);
     if (!user) return true;
     const userId = delMatch[1];
 

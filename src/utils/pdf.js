@@ -39,7 +39,10 @@ function chunkPages(pages, maxChars = 1000, overlap = 200) {
     while (start < fullText.length) {
       const end = findChunkEnd(fullText, start, maxChars);
       rawChunks.push({ start, end });
-      start = end - overlap;
+      if (end >= fullText.length) break;
+      const newStart = end - overlap;
+      if (newStart <= start) break; // prevent infinite loop
+      start = newStart;
     }
   }
 
