@@ -2,8 +2,107 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 
-// In-memory session store (cleared on restart)
-const sessions = new Map();
+/**
+ * Persistent session store — writes through to a JSON file so sessions
+ * survive container restarts. Falls back to in-memory-only when no file
+ * path is configured.
+ */
+class SessionStore {
+  constructor(filePath) {
+    this.filePath = filePath;
+    this.sessions = new Map();
+    this.dirty = false;
+    this.timer = null;
+  }
+
+  load() {
+    if (!this.filePath) return;
+    try {
+      if (fs.existsSync(this.filePath)) {
+        const data = JSON.parse(fs.readFileSync(this.filePath, 'utf-8'));
+        const now = Date.now();
+        for (const [id, session] of Object.entries(data)) {
+          if (now - session.createdAt <= session.ttl) {
+            this.sessions.set(id, session);
+          }
+        }
+        console.log(`[auth] Loaded ${this.sessions.size} active sessions from disk`);
+      }
+    } catch (e) {
+      console.error('[auth] Failed to load sessions:', e.message);
+    }
+  }
+
+  save() {
+    if (!this.filePath || !this.dirty) return;
+    try {
+      const obj = Object.fromEntries(this.sessions);
+      fs.writeFileSync(this.filePath, JSON.stringify(obj, null, 2));
+      this.dirty = false;
+    } catch (e) {
+      console.error('[auth] Failed to save sessions:', e.message);
+    }
+  }
+
+  get(id) { return this.sessions.get(id); }
+  has(id) { return this.sessions.has(id); }
+
+  set(id, session) {
+    this.sessions.set(id, session);
+    this.dirty = true;
+    this.save(); // write-through on create (infrequent)
+  }
+
+  delete(id) {
+    if (this.sessions.delete(id)) {
+      this.dirty = true; // batched via prune timer
+    }
+  }
+
+  pruneExpired() {
+    const now = Date.now();
+    let pruned = 0;
+    for (const [id, session] of this.sessions) {
+      if (now - session.createdAt > session.ttl) {
+        this.sessions.delete(id);
+        pruned++;
+      }
+    }
+    if (pruned > 0) {
+      this.dirty = true;
+      this.save();
+      console.log(`[auth] Pruned ${pruned} expired sessions`);
+    }
+  }
+
+  startPruneTimer(interval = 5 * 60 * 1000) {
+    this.timer = setInterval(() => this.pruneExpired(), interval);
+    this.timer.unref();
+  }
+
+  shutdown() {
+    if (this.timer) { clearInterval(this.timer); this.timer = null; }
+    this.pruneExpired();
+    this.save();
+  }
+}
+
+let sessionStore = null;
+
+function initSessionStore(filePath) {
+  sessionStore = new SessionStore(filePath);
+  sessionStore.load();
+  sessionStore.startPruneTimer();
+  return sessionStore;
+}
+
+function getSessionStore() {
+  if (!sessionStore) {
+    // Fallback: in-memory-only (no file persistence)
+    sessionStore = new SessionStore(null);
+  }
+  return sessionStore;
+}
 
 /**
  * Returns auth configuration from env vars, or null if auth is disabled.
@@ -85,7 +184,7 @@ async function validateIdToken(idToken, config) {
  */
 function createSession(userId, email, name, roles, ttl) {
   const sessionId = crypto.randomUUID();
-  sessions.set(sessionId, {
+  getSessionStore().set(sessionId, {
     userId,
     email,
     name,
@@ -118,12 +217,13 @@ function getSession(req) {
   const sessionId = cookies.grover_session;
   if (!sessionId) return null;
 
-  const session = sessions.get(sessionId);
+  const store = getSessionStore();
+  const session = store.get(sessionId);
   if (!session) return null;
 
   // Check TTL
   if (Date.now() - session.createdAt > session.ttl) {
-    sessions.delete(sessionId);
+    store.delete(sessionId);
     return null;
   }
 
@@ -205,7 +305,7 @@ async function handleAuthRoute(req, res, config) {
   if (req.method === 'POST' && url.pathname === '/api/auth/logout') {
     const cookies = parseCookies(req);
     const sessionId = cookies.grover_session;
-    if (sessionId) sessions.delete(sessionId);
+    if (sessionId) getSessionStore().delete(sessionId);
     clearSessionCookie(res);
 
     // Build Keycloak end-session URL so the browser also kills the SSO session
@@ -282,6 +382,8 @@ function readJsonBody(req, maxBytes = 64 * 1024) {
 
 module.exports = {
   getAuthConfig,
+  initSessionStore,
+  getSessionStore,
   validateIdToken,
   createSession,
   getSession,

@@ -171,7 +171,7 @@ async function update(indexName = null) {
   const graph = new KnowledgeGraph();
   graph.buildFromRecords(records, { domain: indexName || 'Westpac' });
 
-  saveIndex(records, dim, graph, paths);
+  await saveIndex(records, dim, graph, paths);
 
   // Clean up temp files
   cleanTempFiles(indexDir, batchEmbFiles.length, existingEmbFile);

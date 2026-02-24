@@ -26,7 +26,8 @@ src/
 │   ├── chat-manager.js            ChatManager class (per-user multi-chat isolation)
 │   └── feedback-index.js          FeedbackIndex class (content-keyed shared quality scores)
 ├── persistence/
-│   └── index-persistence.js       Binary embedding + JSON metadata save/load
+│   ├── index-persistence.js       Binary embedding + JSON metadata save/load
+│   └── rvf-store.js               HNSW persistent store (build, open, query, close)
 ├── retrieval/
 │   ├── vector-search.js           Brute-force cosine distance search
 │   └── retrieve.js                Orchestrates search pipeline (embed → vector → graph)
@@ -66,7 +67,8 @@ Layer 1: utils/math, utils/pdf, utils/file-discovery, utils/formatting
 Layer 2: graph/entity-extraction, graph/knowledge-graph,
          memory/conversation-memory, memory/feedback-index, memory/chat-manager
     ▲
-Layer 3: persistence/index-persistence, retrieval/vector-search,
+Layer 3: persistence/index-persistence, persistence/rvf-store,
+         retrieval/vector-search,
          llm/client, llm/query-rewrite, llm/rag, llm/usage-tracker,
          retrieval/retrieve
     ▲
@@ -114,8 +116,11 @@ Centralizes all file paths, environment variable reading, and Keycloak configura
 | `AUTH_SESSION_TTL` | `number` | `AUTH_SESSION_TTL` env var (default: `86400000` / 24h) |
 | `KEYCLOAK_ADMIN_USER` | `string` | `KEYCLOAK_ADMIN_USER` env var (default: `admin`) |
 | `KEYCLOAK_ADMIN_PASSWORD` | `string` | `KEYCLOAK_ADMIN_PASSWORD` env var (default: `admin`) |
-| `resolveIndex(name)` | `function` | Returns paths for a named index subdirectory |
+| `SESSION_FILE` | `string` | `<INDEX_DIR>/sessions.json` (overridable via `SESSION_FILE` env var) |
+| `resolveIndex(name)` | `function` | Returns paths for a named index subdirectory (includes `rvfFile`) |
 | `listIndexes()` | `function` | Returns available index names (scans `INDEX_DIR`) |
+
+`resolveIndex(name)` returns: `{ metaFile, embeddingsFile, graphFile, memoryFile, rvfFile, indexDir }` where `rvfFile` is `<indexDir>/vectors.rvf`.
 
 ### 2.2 `src/domain-constants.js`
 
@@ -307,11 +312,13 @@ The `FeedbackIndex` class (~95 lines) provides a content-keyed shared quality in
 
 | Function | Description |
 |----------|-------------|
-| `saveIndex(records, dim, graph)` | Writes metadata as JSON, embeddings as raw Float32 binary, graph as JSON. Creates index directory if needed. |
-| `loadIndex()` | Reads metadata + binary embeddings, reconstructs Float32Arrays, deserializes graph via `KnowledgeGraph.fromJSON`. Returns `{ dim, records, graph }` or `null`. |
+| `saveIndex(records, dim, graph, paths?)` | **Async.** Writes metadata as JSON, embeddings as raw Float32 binary, graph as JSON. When `RVF_AVAILABLE` and `paths` provided, builds HNSW persistent store via `buildRvfStore()`. Creates index directory if needed. |
+| `loadIndex()` | Reads metadata + binary embeddings, reconstructs Float32Arrays, deserializes graph via `KnowledgeGraph.fromJSON`. Returns `{ dim, records, graph, rvfFile }` or `null`. |
 | `loadIndexWithFallback(paths, indexName)` | Loads with paths, falls back to legacy root index if indexName is `Westpac`. |
 
-**Binary format:** Embeddings are stored as a flat `Float32LE` buffer. Record `i`, dimension `j` is at byte offset `(i * dim + j) * 4`. For 6,220 records at 384 dimensions, this produces a ~9.1 MB file.
+**Binary format:** Embeddings are stored as a flat `Float32LE` buffer. Record `i`, dimension `j` is at byte offset `(i * dim + j) * 4`. For 13,000+ records at 384 dimensions, this produces a ~19 MB file.
+
+**RVF build:** When ruvector's RVF native binaries are available, `saveIndex()` also calls `buildRvfStore(paths.rvfFile, records, dim)` to create the HNSW persistent store. This is a transparent upgrade — the flat embeddings file is always written for backward compatibility and graph building.
 
 ### 2.11 `src/retrieval/vector-search.js`
 
@@ -321,18 +328,33 @@ vectorSearch(queryVec: Float32Array, records: Object[], k: number) → [{id, sco
 
 Brute-force cosine distance search. Computes query norm once, then iterates all records. Returns top-k results sorted by ascending distance (lower = more similar). Uses `Float64Array` for scored distances to avoid precision loss.
 
+### 2.10a `src/persistence/rvf-store.js`
+
+Thin wrapper around ruvector's RVF (persistent HNSW) functions. All functions are no-ops when `RVF_AVAILABLE` is `false`.
+
+| Export | Type | Description |
+|--------|------|-------------|
+| `RVF_AVAILABLE` | `boolean` | `true` when `rv.isRvfAvailable()` reports native binaries present |
+| `buildRvfStore(rvfPath, records, dim)` | `async function` | Creates HNSW store, ingests vectors in batches of 1,000 (IDs are string-encoded array indices), compacts, closes. Options: `{ dimensions, metric: 'cosine', m: 16, efConstruction: 200 }` |
+| `openRvfStoreForQuery(rvfPath)` | `async function` | Opens an existing `.rvf` file for querying. Returns store handle or `null`. |
+| `queryRvfStore(store, queryVec, k, opts?)` | `async function` | HNSW k-NN search. Returns `[{ id, distance }]`. Default `efSearch: 64`. |
+| `closeRvfStore(store)` | `async function` | Closes an open store handle. |
+
+**RVF ID scheme:** IDs must be string-encoded u64 integers. The store uses array indices (`"0"`, `"1"`, ..., `"N-1"`) as IDs. At query time, results map back to records via `records[parseInt(id, 10)]`.
+
 ### 2.12 `src/retrieval/retrieve.js`
 
 ```
-retrieve(query, index, { k?, graphMode?, memory? }) → { results, path, mode, queryVec }
+retrieve(query, index, { k?, graphMode?, memory?, rvfStore? }) → { results, path, mode, queryVec }
 ```
 
 Orchestrates the full retrieval pipeline:
 1. Rewrites query if follow-up detected (via `rewriteQuery`)
 2. Embeds query via ONNX
-3. Runs `vectorSearch` (over-fetches to `max(k, 10)` if graph mode active)
-4. If graph available, runs `expandResults` for graph-boosted ranking
-5. Returns results, graph traversal path (for viz), mode label, and `queryVec` (to avoid re-embedding in RAG)
+3. If `rvfStore` provided: runs HNSW search via `queryRvfStore()`, maps results back to `index.records[]` by parsing string IDs as array indices. Falls back to brute-force on error.
+4. If no `rvfStore` or HNSW failed: runs `vectorSearch()` brute-force cosine distance
+5. If graph available, runs `expandResults` for graph-boosted ranking
+6. Returns results, graph traversal path (for viz), mode label (`hnsw+graph` | `hnsw` | `vector+graph` | `vector`), and `queryVec`
 
 ### 2.13 `src/llm/client.js`
 
@@ -423,19 +445,36 @@ Extracts the subgraph of nodes and edges connected to cited source documents, fo
 
 ### 2.17 `src/server/auth.js`
 
-Keycloak OIDC authentication module (~287 lines). Lazy-loads `jose` for JWT/JWKS operations.
+Keycloak OIDC authentication module. Lazy-loads `jose` for JWT/JWKS operations. Sessions are file-backed via `SessionStore`.
 
-| Function | Description |
+| Function / Class | Description |
 |----------|-------------|
+| `SessionStore` | File-backed session store (replaces bare `Map`). Persists to `sessions.json`. |
+| `initSessionStore(filePath)` | Creates a `SessionStore`, loads existing sessions from disk, starts prune timer. |
+| `getSessionStore()` | Returns the initialized store (falls back to in-memory-only if not initialized). |
 | `getAuthConfig()` | Returns auth config from env vars, or null if `KEYCLOAK_URL` is not set. Computes all OIDC endpoint URLs. |
 | `validateIdToken(idToken, config)` | Validates JWT against Keycloak's JWKS endpoint. Returns `{ sub, email, name, roles }`. |
-| `createSession(userId, email, name, roles, ttl)` | Creates an in-memory session with random UUID. Returns session ID. |
-| `getSession(req)` | Looks up session from `grover_session` cookie. Checks TTL. Returns user object or null. |
+| `createSession(userId, email, name, roles, ttl)` | Creates a session via `getSessionStore().set()`. Returns session ID. |
+| `getSession(req)` | Looks up session from `grover_session` cookie. Checks TTL, deletes expired. Returns user object or null. |
 | `requireAuth(req, res, config)` | Middleware: returns user object, or sends 401 and returns null. When auth is disabled, returns anonymous user. |
 | `requireAdmin(req, res, config)` | Middleware: checks for `admin` role. Returns user or sends 401/403. When auth is disabled, returns 403. |
 | `handleAuthRoute(req, res, config)` | Route handler for `/auth/callback`, `/api/auth/session`, `/api/auth/logout`, `/api/auth/me`. |
 
-Sessions are stored in-memory (cleared on restart). Cookie: `grover_session`, HttpOnly, SameSite=Lax.
+**SessionStore class:**
+
+| Method | Description |
+|--------|-------------|
+| `load()` | Reads `sessions.json`, filters expired entries |
+| `save()` | Writes to disk when dirty flag is set |
+| `get(id)` | Returns session data |
+| `has(id)` | Returns boolean |
+| `set(id, session)` | Write-through: sets in Map and immediately saves to disk |
+| `delete(id)` | Marks dirty (batched save via next prune cycle) |
+| `pruneExpired()` | Removes expired entries, saves if any pruned |
+| `startPruneTimer(interval)` | Starts periodic cleanup (default 5 min). Timer uses `.unref()` to not prevent exit. |
+| `shutdown()` | Clears timer, prunes, final save |
+
+Cookie: `grover_session`, HttpOnly, SameSite=Lax. Sessions survive server restarts via the file-backed store.
 
 ### 2.17a `src/server/admin-api.js`
 
@@ -464,10 +503,10 @@ A self-contained HTML fragment containing CSS styles, HTML markup, and JavaScrip
 |---------|-------|-------------|
 | `ingest.js` | ~130 | Batch child process orchestrator: discovers files, splits into batches of 500, spawns `embed-batch.js` workers, merges results, builds graph, saves index. Parent never loads ONNX. |
 | `update.js` | ~150 | Incremental: detects new/modified/deleted files by mtime, streams existing embeddings to disk, processes changes via batch child processes, merges results, rebuilds graph |
-| `search.js` | 20 | Loads index, calls `retrieve`, prints formatted results |
+| `search.js` | 30 | Loads index, opens RVF store if available, calls `retrieve` with HNSW, prints formatted results, closes store |
 | `ask.js` | 27 | Loads index + memory, calls `retrieve` + `ragAnswer` with streaming and domain parameter |
 | `interactive.js` | 184 | Full REPL with flags (`--flat`, `--k N`, `--search`, `--related`, `--entities`, `--memory`, `--forget`) |
-| `serve.js` | ~400 | HTTP server with auth, admin, chat management, feedback, TTS, SSE streaming, graceful shutdown. Manages per-user ChatManagers and UsageTracker. |
+| `serve.js` | ~430 | HTTP server with auth, admin, chat management, feedback, TTS, SSE streaming, graceful shutdown. Manages per-user ChatManagers, UsageTracker, persistent sessions, and RVF HNSW store lifecycle. |
 | `stats.js` | 65 | Reads index/graph/memory and prints statistics with debug logging |
 
 ---
@@ -604,7 +643,35 @@ Same format as legacy `memory.json`, with added feedback fields:
 }
 ```
 
-### 3.8 `/api/ask` Response
+### 3.8 `sessions.json`
+
+File-backed session store. Written by `SessionStore` on session create and periodic prune.
+```json
+{
+  "a1b2c3d4-e5f6-7890-abcd-ef1234567890": {
+    "userId": "keycloak-sub-id",
+    "email": "user@example.com",
+    "name": "Jane Doe",
+    "roles": ["user"],
+    "createdAt": 1700000000000,
+    "ttl": 86400000
+  }
+}
+```
+
+Entries are filtered on load: any session where `Date.now() > createdAt + ttl` is discarded. The file is stored at `<INDEX_DIR>/sessions.json` by default (overridable via `SESSION_FILE` env var). Added to `.gitignore`.
+
+### 3.9 `vectors.rvf`
+
+Binary HNSW persistent store created by `@ruvector/rvf`. Contains a Hierarchical Navigable Small World graph index for approximate nearest neighbor search. For 13,211 vectors at 384 dimensions, the file is ~19.5 MB.
+
+- Built during ingestion by `buildRvfStore()` in batches of 1,000
+- Parameters: `metric: 'cosine'`, `m: 16`, `efConstruction: 200`
+- IDs are string-encoded array indices (`"0"` through `"N-1"`)
+- Stored at `<indexDir>/vectors.rvf` per named index
+- Added to `.gitignore`
+
+### 3.10 `/api/ask` Response
 
 ```json
 {
@@ -616,7 +683,7 @@ Same format as legacy `memory.json`, with added feedback fields:
     "nodes": ["doc:Westpac/wbc/fx/WBC-FXSwapPDS.pdf", "brand:wbc", "category:fx"],
     "edges": [{"source": "doc:...", "target": "brand:wbc", "type": "belongs_to_brand"}]
   },
-  "mode": "vector+graph",
+  "mode": "hnsw+graph",
   "memoryId": "mem-user123-1700000000000"
 }
 ```
