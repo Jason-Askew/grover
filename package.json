@@ -15,11 +15,9 @@
   "type": "commonjs",
   "dependencies": {
     "@aws-sdk/client-polly": "^3.993.0",
-    "@ruvector/ruvllm": "^2.4.1",
-    "@ruvector/rvf": "^0.2.0",
-    "@ruvector/rvf-node": "^0.1.7",
     "cheerio": "^1.2.0",
     "jose": "^5.10.0",
+    "pg": "^8.18.0",
     "ruvector": "^0.1.97",
     "turndown": "^7.2.2"
   }

@@ -1,15 +1,13 @@
-const fs = require('fs');
-const { EMBEDDINGS_FILE, GRAPH_FILE, MEMORY_FILE, resolveIndex } = require('../config');
-const { loadIndexWithFallback } = require('../persistence/index-persistence');
+const { initDb } = require('../persistence/db');
+const db = require('../persistence/db');
+const { loadIndex } = require('../persistence/index-persistence');
 
-function stats(indexName = null) {
-  const paths = indexName ? resolveIndex(indexName) : null;
-  const index = loadIndexWithFallback(paths, indexName);
+async function stats(indexName = null) {
+  await initDb();
+
+  const name = indexName || 'default';
+  const index = await loadIndex(null, name);
   if (!index) { console.log('No index found. Run: node grover.js ingest'); return; }
-
-  const embeddingsFile = paths ? paths.embeddingsFile : EMBEDDINGS_FILE;
-  const graphFile = paths ? paths.graphFile : GRAPH_FILE;
-  const memoryFile = paths ? paths.memoryFile : MEMORY_FILE;
 
   const files = new Map();
   for (const r of index.records) {
@@ -19,10 +17,20 @@ function stats(indexName = null) {
 
   const label = indexName ? ` (${indexName})` : '';
   console.log(`\n=== Index Statistics${label} ===`);
+  console.log(`Storage: PostgreSQL (ruvector HNSW)`);
   console.log(`Total files: ${files.size}`);
   console.log(`Total chunks: ${index.records.length}`);
   console.log(`Embedding dimensions: ${index.dim}`);
-  console.log(`Index size: ${(fs.statSync(embeddingsFile).size / 1024 / 1024).toFixed(1)} MB`);
+
+  // Get database size info
+  const sizeRes = await db.query(
+    `SELECT pg_size_pretty(pg_total_relation_size('chunks')) AS chunks_size,
+            pg_size_pretty(pg_total_relation_size('documents')) AS docs_size`
+  );
+  if (sizeRes.rows.length > 0) {
+    console.log(`Chunks table size: ${sizeRes.rows[0].chunks_size}`);
+    console.log(`Documents table size: ${sizeRes.rows[0].docs_size}`);
+  }
 
   if (index.graph) {
     const g = index.graph;
@@ -41,7 +49,6 @@ function stats(indexName = null) {
     }
     console.log(`Edges: ${totalEdges}`);
     console.log(`Entities tracked: ${g.entityIndex.size}`);
-    console.log(`Graph file: ${(fs.statSync(graphFile).size / 1024).toFixed(0)} KB`);
   }
 
   const dirs = new Map();
@@ -57,17 +64,14 @@ function stats(indexName = null) {
     console.log(`  ${dir}: ${info.files} files, ${info.chunks} chunks`);
   }
 
-  if (fs.existsSync(memoryFile)) {
-    try {
-      const memData = JSON.parse(fs.readFileSync(memoryFile, 'utf-8'));
-      console.log(`\n=== Conversation Memory ===`);
-      console.log(`Past interactions: ${(memData.memories || []).length}`);
-      console.log(`History messages: ${(memData.history || []).length}`);
-      console.log(`Memory file: ${(fs.statSync(memoryFile).size / 1024).toFixed(0)} KB`);
-    } catch (e) {
-      if (process.env.GROVER_DEBUG === '1') console.error('[debug] Memory parse error:', e.message);
-    }
-  }
+  // Memory stats from PostgreSQL
+  const memRes = await db.query('SELECT count(*) FROM memories');
+  const msgRes = await db.query('SELECT count(*) FROM chat_messages');
+  const chatRes = await db.query('SELECT count(*) FROM chats');
+  console.log(`\n=== Conversation Data ===`);
+  console.log(`Chats: ${chatRes.rows[0].count}`);
+  console.log(`Messages: ${msgRes.rows[0].count}`);
+  console.log(`Memories: ${memRes.rows[0].count}`);
 }
 
 module.exports = { stats };

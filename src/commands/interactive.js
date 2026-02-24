@@ -1,29 +1,38 @@
 const rv = require('ruvector');
 const readline = require('readline');
-const { ReasoningBank, SonaCoordinator } = require('@ruvector/ruvllm');
 const { LLM_API_KEY, LLM_MODEL, LLM_BASE_URL, resolveIndex } = require('../config');
-const { loadIndexWithFallback } = require('../persistence/index-persistence');
+const { initDb } = require('../persistence/db');
+const db = require('../persistence/db');
+const { loadIndex } = require('../persistence/index-persistence');
 const { retrieve } = require('../retrieval/retrieve');
 const { ragAnswer } = require('../llm/rag');
 const { formatResult } = require('../utils/formatting');
 const { ConversationMemory } = require('../memory/conversation-memory');
 
 async function interactive(indexName = null) {
-  const paths = indexName ? resolveIndex(indexName) : null;
-  const index = loadIndexWithFallback(paths, indexName);
+  await initDb();
+
+  const index = await loadIndex(null, indexName);
   if (!index) { console.log('No index found. Run: node grover.js ingest'); return; }
 
   const hasGraph = !!index.graph;
   const hasLLM = !!LLM_API_KEY;
   const label = indexName ? ` "${indexName}"` : '';
   console.log(`Loading index${label}: ${index.records.length} chunks, ${index.dim}d${hasGraph ? ' + graph' : ''}`);
+  console.log(`  HNSW: active (PostgreSQL ruvector)`);
   if (hasLLM) console.log(`LLM: ${LLM_MODEL} via ${LLM_BASE_URL}`);
   else console.log(`LLM: not configured (set OPENAI_API_KEY for RAG answers)`);
 
   await rv.initOnnxEmbedder();
 
-  const memory = new ConversationMemory(paths);
-  memory.load();
+  // Create a temporary chat for the interactive session
+  const chatId = `interactive-${Date.now()}`;
+  await db.query(
+    `INSERT INTO chats (id, index_name, user_id, title, is_active)
+     VALUES ($1, $2, '_anonymous', 'Interactive Session', true)`,
+    [chatId, indexName || 'default']
+  );
+  const memory = new ConversationMemory(chatId);
 
   const uniqueFiles = new Set(index.records.map(r => r.file)).size;
   console.log(`\nReady. ${index.records.length} chunks from ${uniqueFiles} PDFs.`);
@@ -33,8 +42,10 @@ async function interactive(indexName = null) {
     ).length;
     console.log(`Knowledge graph: ${index.graph.nodes.size} nodes, ${entityCount} entities.`);
   }
-  if (memory.memories.length > 0) {
-    console.log(`Conversation memory: ${memory.memories.length} past interactions.`);
+
+  const memStats = await memory.stats();
+  if (memStats.totalMemories > 0) {
+    console.log(`Conversation memory: ${memStats.totalMemories} past interactions.`);
   }
 
   console.log('\nCommands:');
@@ -77,29 +88,17 @@ async function interactive(indexName = null) {
       }
 
       if (input === '--memory') {
-        const stats = memory.stats();
+        const stats = await memory.stats();
         console.log(`\n  Conversation Memory:`);
         console.log(`    Past interactions: ${stats.totalMemories}`);
         console.log(`    History messages: ${stats.historyMessages}`);
-        console.log(`    SONA trajectories buffered: ${stats.sona.trajectoriesBuffered}`);
-        console.log(`    SONA patterns learned: ${stats.sona.patterns.totalPatterns}`);
-        if (memory.memories.length > 0) {
-          console.log(`\n  Recent queries:`);
-          memory.memories.slice(-5).forEach((m, i) => {
-            const ts = new Date(m.timestamp).toLocaleTimeString();
-            console.log(`    [${ts}] ${m.query}`);
-          });
-        }
         console.log();
         rl.prompt(); return;
       }
 
       if (input === '--forget') {
-        memory.history = [];
-        memory.memories = [];
-        memory.reasoningBank = new ReasoningBank();
-        memory.sona = new SonaCoordinator();
-        memory.save();
+        await db.query('DELETE FROM memories WHERE chat_id = $1', [chatId]);
+        await db.query('DELETE FROM chat_messages WHERE chat_id = $1', [chatId]);
         console.log('\n  Memory cleared.\n');
         rl.prompt(); return;
       }
@@ -164,7 +163,7 @@ async function interactive(indexName = null) {
       }
 
       const useMemory = hasLLM && !searchOnly ? memory : null;
-      const { results, mode, queryVec } = await retrieve(searchQuery, index, { k, graphMode, memory: useMemory });
+      const { results, mode, queryVec } = await retrieve(searchQuery, index, { k, graphMode, memory: useMemory, indexName });
 
       if (!hasLLM || searchOnly) {
         console.log(`\n  [${mode}]\n`);
@@ -180,7 +179,12 @@ async function interactive(indexName = null) {
     rl.prompt();
   });
 
-  rl.on('close', () => { console.log('\nBye.'); process.exit(0); });
+  rl.on('close', () => {
+    // Clean up the temporary chat
+    db.query('DELETE FROM chats WHERE id = $1', [chatId]).catch(() => {});
+    console.log('\nBye.');
+    process.exit(0);
+  });
 }
 
 module.exports = { interactive };

@@ -1,105 +1,97 @@
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
+const db = require('../persistence/db');
 
 /**
- * Persistent session store — writes through to a JSON file so sessions
- * survive container restarts. Falls back to in-memory-only when no file
- * path is configured.
+ * PostgreSQL-backed session store. Sessions survive container restarts
+ * without file I/O. Falls back to in-memory-only when DATABASE_URL is unset.
  */
 class SessionStore {
-  constructor(filePath) {
-    this.filePath = filePath;
-    this.sessions = new Map();
-    this.dirty = false;
+  constructor() {
     this.timer = null;
   }
 
-  load() {
-    if (!this.filePath) return;
-    try {
-      if (fs.existsSync(this.filePath)) {
-        const data = JSON.parse(fs.readFileSync(this.filePath, 'utf-8'));
-        const now = Date.now();
-        for (const [id, session] of Object.entries(data)) {
-          if (now - session.createdAt <= session.ttl) {
-            this.sessions.set(id, session);
-          }
-        }
-        console.log(`[auth] Loaded ${this.sessions.size} active sessions from disk`);
-      }
-    } catch (e) {
-      console.error('[auth] Failed to load sessions:', e.message);
-    }
+  async load() {
+    // Prune expired sessions on startup
+    await this.pruneExpired();
+    const { rows } = await db.query('SELECT count(*) FROM sessions');
+    console.log(`[auth] Loaded ${rows[0].count} active sessions from PostgreSQL`);
   }
 
-  save() {
-    if (!this.filePath || !this.dirty) return;
-    try {
-      const obj = Object.fromEntries(this.sessions);
-      fs.writeFileSync(this.filePath, JSON.stringify(obj, null, 2));
-      this.dirty = false;
-    } catch (e) {
-      console.error('[auth] Failed to save sessions:', e.message);
-    }
+  async get(id) {
+    const { rows } = await db.query('SELECT * FROM sessions WHERE id = $1', [id]);
+    if (rows.length === 0) return null;
+    const r = rows[0];
+    return {
+      userId: r.user_id,
+      email: r.email,
+      name: r.name,
+      roles: r.roles || [],
+      createdAt: Number(r.created_at),
+      ttl: Number(r.ttl),
+    };
   }
 
-  get(id) { return this.sessions.get(id); }
-  has(id) { return this.sessions.has(id); }
-
-  set(id, session) {
-    this.sessions.set(id, session);
-    this.dirty = true;
-    this.save(); // write-through on create (infrequent)
+  has(id) {
+    // Sync check not possible with PG; callers should use get() instead
+    return this.get(id).then(s => !!s);
   }
 
-  delete(id) {
-    if (this.sessions.delete(id)) {
-      this.dirty = true; // batched via prune timer
-    }
+  async set(id, session) {
+    await db.query(
+      `INSERT INTO sessions (id, user_id, email, name, roles, created_at, ttl)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
+       ON CONFLICT (id) DO UPDATE SET
+         user_id = EXCLUDED.user_id,
+         email = EXCLUDED.email,
+         name = EXCLUDED.name,
+         roles = EXCLUDED.roles,
+         created_at = EXCLUDED.created_at,
+         ttl = EXCLUDED.ttl`,
+      [id, session.userId, session.email, session.name,
+       JSON.stringify(session.roles || []), session.createdAt, session.ttl]
+    );
   }
 
-  pruneExpired() {
-    const now = Date.now();
-    let pruned = 0;
-    for (const [id, session] of this.sessions) {
-      if (now - session.createdAt > session.ttl) {
-        this.sessions.delete(id);
-        pruned++;
-      }
-    }
-    if (pruned > 0) {
-      this.dirty = true;
-      this.save();
-      console.log(`[auth] Pruned ${pruned} expired sessions`);
+  async delete(id) {
+    await db.query('DELETE FROM sessions WHERE id = $1', [id]);
+  }
+
+  async pruneExpired() {
+    const result = await db.query(
+      'DELETE FROM sessions WHERE created_at + ttl < $1', [Date.now()]
+    );
+    if (result.rowCount > 0) {
+      console.log(`[auth] Pruned ${result.rowCount} expired sessions`);
     }
   }
 
   startPruneTimer(interval = 5 * 60 * 1000) {
-    this.timer = setInterval(() => this.pruneExpired(), interval);
+    this.timer = setInterval(() => this.pruneExpired().catch(e => {
+      console.error('[auth] Prune error:', e.message);
+    }), interval);
     this.timer.unref();
   }
 
-  shutdown() {
+  async shutdown() {
     if (this.timer) { clearInterval(this.timer); this.timer = null; }
-    this.pruneExpired();
-    this.save();
+    await this.pruneExpired();
   }
 }
 
 let sessionStore = null;
 
-function initSessionStore(filePath) {
-  sessionStore = new SessionStore(filePath);
-  sessionStore.load();
+async function initSessionStore() {
+  sessionStore = new SessionStore();
+  await sessionStore.load();
   sessionStore.startPruneTimer();
   return sessionStore;
 }
 
 function getSessionStore() {
   if (!sessionStore) {
-    // Fallback: in-memory-only (no file persistence)
-    sessionStore = new SessionStore(null);
+    sessionStore = new SessionStore();
   }
   return sessionStore;
 }
@@ -182,9 +174,9 @@ async function validateIdToken(idToken, config) {
 /**
  * Create a server-side session. Returns the session ID.
  */
-function createSession(userId, email, name, roles, ttl) {
+async function createSession(userId, email, name, roles, ttl) {
   const sessionId = crypto.randomUUID();
-  getSessionStore().set(sessionId, {
+  await getSessionStore().set(sessionId, {
     userId,
     email,
     name,
@@ -210,20 +202,20 @@ function parseCookies(req) {
 
 /**
  * Look up the current session from a request cookie.
- * Returns { userId, email, name } or null.
+ * Returns { userId, email, name, roles } or null.
  */
-function getSession(req) {
+async function getSession(req) {
   const cookies = parseCookies(req);
   const sessionId = cookies.grover_session;
   if (!sessionId) return null;
 
   const store = getSessionStore();
-  const session = store.get(sessionId);
+  const session = await store.get(sessionId);
   if (!session) return null;
 
   // Check TTL
   if (Date.now() - session.createdAt > session.ttl) {
-    store.delete(sessionId);
+    await store.delete(sessionId);
     return null;
   }
 
@@ -234,12 +226,12 @@ function getSession(req) {
  * Require authentication. Returns user object or sends 401 and returns null.
  * When auth is disabled (config is null), returns a default anonymous user.
  */
-function requireAuth(req, res, config) {
+async function requireAuth(req, res, config) {
   if (!config) {
     return { userId: '_anonymous', email: '', name: '' };
   }
 
-  const user = getSession(req);
+  const user = await getSession(req);
   if (!user) {
     res.writeHead(401, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ error: 'Not authenticated' }));
@@ -288,7 +280,7 @@ async function handleAuthRoute(req, res, config) {
       }
 
       const user = await validateIdToken(id_token, config);
-      const sessionId = createSession(user.sub, user.email, user.name, user.roles, config.ttl);
+      const sessionId = await createSession(user.sub, user.email, user.name, user.roles, config.ttl);
       setSessionCookie(res, sessionId, config.ttl);
 
       res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -305,7 +297,7 @@ async function handleAuthRoute(req, res, config) {
   if (req.method === 'POST' && url.pathname === '/api/auth/logout') {
     const cookies = parseCookies(req);
     const sessionId = cookies.grover_session;
-    if (sessionId) getSessionStore().delete(sessionId);
+    if (sessionId) await getSessionStore().delete(sessionId);
     clearSessionCookie(res);
 
     // Build Keycloak end-session URL so the browser also kills the SSO session
@@ -321,7 +313,7 @@ async function handleAuthRoute(req, res, config) {
 
   // GET /api/auth/me — return current user info
   if (req.method === 'GET' && url.pathname === '/api/auth/me') {
-    const user = getSession(req);
+    const user = await getSession(req);
     if (!user) {
       res.writeHead(401, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Not authenticated' }));
@@ -339,14 +331,14 @@ async function handleAuthRoute(req, res, config) {
  * Require admin role. Returns user object or sends 401/403 and returns null.
  * When auth is disabled (config is null), always returns 403.
  */
-function requireAdmin(req, res, config) {
+async function requireAdmin(req, res, config) {
   if (!config) {
     res.writeHead(403, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ error: 'Admin features require authentication to be enabled' }));
     return null;
   }
 
-  const user = getSession(req);
+  const user = await getSession(req);
   if (!user) {
     res.writeHead(401, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ error: 'Not authenticated' }));

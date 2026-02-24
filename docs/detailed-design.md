@@ -5,9 +5,9 @@
 ### 1.1 Directory Structure
 
 ```
-grover.js                          CLI dispatcher (77 lines)
+grover.js                          CLI dispatcher
 src/
-├── config.js                      File paths, env vars, LLM config, Keycloak config
+├── config.js                      File paths, env vars, DATABASE_URL, Keycloak config
 ├── domain-constants.js            Westpac financial domain vocabulary
 ├── domain-constants-sa.js         Services Australia domain vocabulary (33 categories)
 ├── utils/
@@ -22,15 +22,14 @@ src/
 │   ├── entity-extraction.js       Domain entity extraction, category inference from filenames
 │   └── knowledge-graph.js         KnowledgeGraph class (nodes, edges, traversal)
 ├── memory/
-│   ├── conversation-memory.js     ConversationMemory class (persist, recall, SONA, feedback)
+│   ├── conversation-memory.js     ConversationMemory class (PostgreSQL-backed, HNSW retrieval)
 │   ├── chat-manager.js            ChatManager class (per-user multi-chat isolation)
 │   └── feedback-index.js          FeedbackIndex class (content-keyed shared quality scores)
 ├── persistence/
-│   ├── index-persistence.js       Binary embedding + JSON metadata save/load
-│   └── rvf-store.js               HNSW persistent store (build, open, query, close)
+│   ├── db.js                      PostgreSQL connection pool (singleton pg.Pool)
+│   └── index-persistence.js       Index save/load via PostgreSQL + JSONB graph storage
 ├── retrieval/
-│   ├── vector-search.js           Brute-force cosine distance search
-│   └── retrieve.js                Orchestrates search pipeline (embed → vector → graph)
+│   └── retrieve.js                Hybrid search pipeline (HNSW + BM25 RRF + graph expansion)
 ├── llm/
 │   ├── client.js                  OpenAI-compatible HTTP client (streaming + non-streaming)
 │   ├── query-rewrite.js           Follow-up query expansion via LLM
@@ -42,11 +41,12 @@ src/
 │   ├── chat-panel.html            Injected chat panel (HTML/CSS/JS)
 │   ├── login-overlay.html         Keycloak OIDC login overlay (PKCE flow)
 │   ├── auth-callback.html         OIDC callback page
-│   ├── auth.js                    Keycloak OIDC validation, sessions, auth middleware
+│   ├── auth.js                    Keycloak OIDC validation, PostgreSQL-backed sessions, auth middleware
 │   ├── admin-api.js               Admin routes (user CRUD, usage stats)
 │   └── admin-panel.html           Admin panel HTML page
 └── commands/
-    ├── ingest.js                  Full PDF ingestion pipeline
+    ├── bootstrap.js               Restore database from pg_dump seed file
+    ├── ingest.js                  Full ingestion pipeline (dual-path: in-process or batched)
     ├── update.js                  Incremental index update (add/modify/delete)
     ├── search.js                  CLI search command
     ├── ask.js                     Single-query RAG command
@@ -60,15 +60,14 @@ src/
 Dependencies flow strictly downward. No circular imports exist.
 
 ```
-Layer 0: config.js, domain-constants.js, domain-constants-sa.js
+Layer 0: config.js, domain-constants.js, domain-constants-sa.js, persistence/db.js
     ▲
 Layer 1: utils/math, utils/pdf, utils/file-discovery, utils/formatting
     ▲
 Layer 2: graph/entity-extraction, graph/knowledge-graph,
          memory/conversation-memory, memory/feedback-index, memory/chat-manager
     ▲
-Layer 3: persistence/index-persistence, persistence/rvf-store,
-         retrieval/vector-search,
+Layer 3: persistence/index-persistence,
          llm/client, llm/query-rewrite, llm/rag, llm/usage-tracker,
          retrieval/retrieve
     ▲
@@ -78,12 +77,13 @@ Layer 5: commands/*
 ```
 
 **Rules enforced:**
-- `utils/` and constants depend on nothing in `src/`
-- `graph/` and `memory/` depend only on Layer 0-1
-- `persistence/` depends on `graph/` (for `KnowledgeGraph.fromJSON`)
+- `utils/` and constants depend on nothing in `src/` (except `config.js`)
+- `persistence/db.js` depends only on `pg` (npm)
+- `graph/` and `memory/` depend on Layer 0-1 and `persistence/db`
+- `persistence/index-persistence.js` depends on `db`, `graph/knowledge-graph`
 - `llm/` depends on config + `utils/formatting` only
-- `retrieval/` depends on `llm/query-rewrite` + `retrieval/vector-search`
-- `server/auth` depends only on `config` + `jose` (lazy-loaded)
+- `retrieval/` depends on `llm/query-rewrite` + `persistence/db`
+- `server/auth` depends on `config` + `persistence/db` + `jose` (lazy-loaded)
 - `server/admin-api` depends on `server/auth` + `config`
 - `commands/` depend on everything above, never on each other (except `update` imports `ingest` as fallback)
 
@@ -91,7 +91,23 @@ Layer 5: commands/*
 
 ## 2. Module Specifications
 
-### 2.1 `src/config.js`
+### 2.1 `src/persistence/db.js`
+
+Singleton PostgreSQL connection pool using `pg.Pool`.
+
+| Export | Type | Description |
+|--------|------|-------------|
+| `getPool()` | `function` | Returns the shared `pg.Pool` instance (created on first call) |
+| `query(text, params)` | `async function` | Executes a parameterized query via the pool |
+| `getClient()` | `async function` | Acquires a client from the pool (for transactions). Caller must call `client.release()`. |
+| `closePool()` | `async function` | Closes the pool (for graceful shutdown) |
+| `initDb()` | `async function` | Tests connection, verifies ruvector extension, and calls `ensureSchema()`. Throws if extension missing. |
+
+Pool configuration: `max: 20`, `idleTimeoutMillis: 30000`. Connection string from `DATABASE_URL` env var (default: `postgres://grover:grover@localhost:5432/grover`).
+
+The `ensureSchema()` function (called by `initDb()`) creates all tables, columns, and indexes using `IF NOT EXISTS` / `IF NOT EXISTS` patterns. This is idempotent and safe to call on every startup — it protects against `init.sql` not running (e.g., existing PostgreSQL volume) or schema changes between versions.
+
+### 2.2 `src/config.js`
 
 Centralizes all file paths, environment variable reading, and Keycloak configuration.
 
@@ -99,30 +115,18 @@ Centralizes all file paths, environment variable reading, and Keycloak configura
 |--------|------|-------------|
 | `PROJECT_ROOT` | `string` | Absolute path to project root (resolved from `__dirname`) |
 | `DOCS_DIR` | `string` | Absolute path to source document directory (`<PROJECT_ROOT>/corpus`) |
-| `INDEX_DIR` | `string` | Absolute path to generated index directory (`<PROJECT_ROOT>/index`) |
-| `META_FILE` | `string` | `<INDEX_DIR>/metadata.json` |
-| `EMBEDDINGS_FILE` | `string` | `<INDEX_DIR>/embeddings.bin` |
-| `GRAPH_FILE` | `string` | `<INDEX_DIR>/graph.json` |
-| `MEMORY_FILE` | `string` | `<INDEX_DIR>/memory.json` |
+| `INDEX_DIR` | `string` | Absolute path to index directory (`<PROJECT_ROOT>/index`) — used for batch temp files only |
+| `DATABASE_URL` | `string` | PostgreSQL connection string (from env var, default: `postgres://grover:grover@localhost:5432/grover`) |
 | `LLM_API_KEY` | `string` | `OPENAI_API_KEY` env var |
 | `LLM_BASE_URL` | `string` | `OPENAI_BASE_URL` env var (default: OpenAI) |
 | `LLM_MODEL` | `string` | `LLM_MODEL` env var (default: `gpt-4o-mini`) |
-| `POLLY_REGION` | `string` | `AWS_REGION` env var (default: `ap-southeast-2`) |
-| `POLLY_VOICE` | `string` | `POLLY_VOICE` env var (default: `Olivia`) |
-| `POLLY_ENGINE` | `string` | `POLLY_ENGINE` env var (default: `neural`) |
 | `KEYCLOAK_URL` | `string` | `KEYCLOAK_URL` env var (empty = auth disabled) |
-| `KEYCLOAK_REALM` | `string` | `KEYCLOAK_REALM` env var (default: `grover`) |
-| `KEYCLOAK_CLIENT_ID` | `string` | `KEYCLOAK_CLIENT_ID` env var (default: `grover-web`) |
-| `AUTH_SESSION_TTL` | `number` | `AUTH_SESSION_TTL` env var (default: `86400000` / 24h) |
-| `KEYCLOAK_ADMIN_USER` | `string` | `KEYCLOAK_ADMIN_USER` env var (default: `admin`) |
-| `KEYCLOAK_ADMIN_PASSWORD` | `string` | `KEYCLOAK_ADMIN_PASSWORD` env var (default: `admin`) |
-| `SESSION_FILE` | `string` | `<INDEX_DIR>/sessions.json` (overridable via `SESSION_FILE` env var) |
-| `resolveIndex(name)` | `function` | Returns paths for a named index subdirectory (includes `rvfFile`) |
-| `listIndexes()` | `function` | Returns available index names (scans `INDEX_DIR`) |
+| `KEYCLOAK_PUBLIC_URL` | `string` | Browser-facing Keycloak URL (defaults to `KEYCLOAK_URL`) |
+| `resolveIndex(name)` | `function` | Returns paths for a named index subdirectory (temp files during ingest) |
+| `listIndexes()` | `function` | Returns available index names (scans `INDEX_DIR` for legacy file-based indexes) |
+| `listIndexesPg()` | `async function` | Returns available index names from PostgreSQL (`SELECT DISTINCT index_name FROM documents`) |
 
-`resolveIndex(name)` returns: `{ metaFile, embeddingsFile, graphFile, memoryFile, rvfFile, indexDir }` where `rvfFile` is `<indexDir>/vectors.rvf`.
-
-### 2.2 `src/domain-constants.js`
+### 2.3 `src/domain-constants.js`
 
 Financial domain vocabulary used for entity extraction.
 
@@ -133,7 +137,7 @@ Financial domain vocabulary used for entity extraction.
 | `BRANDS` | `Object` | 4 | `{ wbc: 'Westpac', sgb: 'St.George Bank', ... }` |
 | `CATEGORIES` | `Object` | 4 | `{ fx: 'Foreign Exchange', irrm: 'Interest Rate Risk Management', ... }` |
 
-### 2.2a `src/domain-constants-sa.js`
+### 2.3a `src/domain-constants-sa.js`
 
 Services Australia domain vocabulary.
 
@@ -144,9 +148,9 @@ Services Australia domain vocabulary.
 | `SA_BRANDS` | `Object` | 0 | `{}` — SA uses categories-only (no brand nodes) |
 | `SA_CATEGORIES` | `Object` | 33 | `{ payments: 'Payments', centrelink: 'Centrelink', ... }` |
 
-### 2.3 `src/utils/math.js`
+### 2.4 `src/utils/math.js`
 
-Single shared implementation of cosine similarity, eliminating the duplication that previously existed between `ConversationMemory.findRelevant` and the standalone `cosineSim` function.
+Single shared implementation of cosine similarity.
 
 ```
 cosineSim(a: Float32Array, b: Float32Array) → number
@@ -154,21 +158,21 @@ cosineSim(a: Float32Array, b: Float32Array) → number
 
 Returns the cosine similarity in the range [-1, 1]. Uses epsilon `1e-8` to avoid division by zero.
 
-### 2.4 `src/utils/pdf.js`
+### 2.5 `src/utils/pdf.js`
 
 | Function | Signature | Description |
 |----------|-----------|-------------|
 | `extractPdfText` | `(filePath: string) → { numPages, pages[] }` | Invokes Python/pymupdf via `child_process.execFileSync`. Returns per-page text. Max buffer: 50MB. |
 | `chunkPages` | `(pages[], maxChars?, overlap?) → chunk[]` | Page-aware text chunking. Default 1000 chars with 200-char overlap. Breaks at paragraph > newline > sentence boundaries. Minimum chunk size: 20 chars. Returns `{ text, pageStart, pageEnd }`. |
 
-### 2.5 `src/utils/markdown.js`
+### 2.6 `src/utils/markdown.js`
 
 | Function | Signature | Description |
 |----------|-----------|-------------|
 | `parseMarkdown` | `(filePath: string) → { title, url, source, numPages, pages[] }` | Parses markdown files with optional YAML front-matter (`title`, `url`, `source` fields). Returns the body as a single page. |
-| `chunkText` | `(text: string, maxChars?, overlap?) → chunk[]` | Text chunking for markdown content. Default 1000 chars with 200-char overlap. Breaks at paragraph/newline/sentence boundaries. Guards against infinite loops when remaining text is shorter than overlap. Returns `{ text, pageStart, pageEnd }`. |
+| `chunkText` | `(text: string, maxChars?, overlap?) → chunk[]` | Text chunking for markdown content. Default 1000 chars with 200-char overlap. Breaks at paragraph/newline/sentence boundaries. Returns `{ text, pageStart, pageEnd }`. |
 
-### 2.5a `src/utils/embed-batch.js`
+### 2.7 `src/utils/embed-batch.js`
 
 Standalone child process worker for batch embedding. Isolates the ONNX WASM runtime (~4GB memory) to a short-lived process.
 
@@ -182,35 +186,24 @@ Reads newline-delimited file paths from stdin.
 4. Writes metadata as JSON to `<outputPrefix>.json` (includes `dim`, `records[]`, `errors`)
 5. Exits (OS reclaims all WASM memory)
 
-### 2.5b `src/utils/file-discovery.js`
-
-```
-findFiles(dir: string, extension: string) → string[]
-findPdfs(dir: string) → string[]
-findMarkdownFiles(dir: string) → string[]
-```
-
-Generic recursive file finder with extension filter, skipping hidden directories. `findPdfs` and `findMarkdownFiles` are thin wrappers around `findFiles`.
-
-### 2.6 `src/utils/formatting.js`
+### 2.8 `src/utils/formatting.js`
 
 | Function | Purpose | Used By |
 |----------|---------|--------|
 | `formatResult(r, i, showGraph?)` | Formats a single search result for CLI display. Shows score, file, page range, graph tags, boost. | `commands/search`, `commands/interactive` |
 | `formatContext(results)` | Formats results as numbered `[Source N]` blocks for LLM context. | `llm/rag` |
 
-### 2.7 `src/graph/entity-extraction.js`
+### 2.9 `src/graph/entity-extraction.js`
 
 | Function | Signature | Description |
 |----------|-----------|-------------|
-| `extractEntities` | `(text: string, domain?: string) → string[]` | Uses pre-compiled word-boundary regular expressions for case-insensitive matching against domain vocabularies (Westpac or Services Australia). Returns prefixed IDs: `product:forward contract`, `concept:margin call`. Patterns are compiled once at module load via `compilePatterns()`. |
-| `extractDocMeta` | `(filePath: string, domain?: string) → { brand, brandName, category, categoryName }` | Extracts brand and category from file path segments. For docs in `general/`, calls `inferCategoryFromFilename()` to attempt reclassification. |
-| `inferCategoryFromFilename` | `(filename: string) → string \| null` | 4-tier category inference: (1) form codes, (2) language/translation names, (3) keyword rules (~40 ordered rules), (4) medical condition patterns. Returns category key or null. |
-| `DOMAINS` | `Object` | Compiled pattern sets for both domains, keyed by domain name. |
+| `extractEntities` | `(text: string, domain?: string) → string[]` | Uses pre-compiled word-boundary regular expressions for case-insensitive matching against domain vocabularies. Returns prefixed IDs: `product:forward contract`, `concept:margin call`. |
+| `extractDocMeta` | `(filePath: string, domain?: string) → { brand, brandName, category, categoryName }` | Extracts brand and category from file path segments. For docs in `general/`, calls `inferCategoryFromFilename()`. |
+| `inferCategoryFromFilename` | `(filename: string) → string \| null` | 4-tier category inference: (1) form codes, (2) language/translation names, (3) keyword rules (~40 ordered rules), (4) medical condition patterns. |
 
-### 2.8 `src/graph/knowledge-graph.js`
+### 2.10 `src/graph/knowledge-graph.js`
 
-The `KnowledgeGraph` class (303 lines) is the largest module. It maintains four data structures:
+The `KnowledgeGraph` class maintains four data structures:
 
 | Property | Type | Description |
 |----------|------|-------------|
@@ -236,127 +229,122 @@ The `KnowledgeGraph` class (303 lines) is the largest module. It maintains four 
 
 | Method | Description |
 |--------|-------------|
-| `buildFromRecords(records)` | Constructs full graph from ingested chunk records. Creates brand/category/document/chunk/entity nodes and all edge types. Uses representative sampling (first/middle/last chunk per doc) for cross-document similarity. |
-| `expandResults(vectorResults, allRecords, k)` | Graph-enhanced search. For each vector result, traverses 2 hops to find related chunks. Returns combined results scored as `vectorScore - (graphScore * 0.15)` plus a traversal path for visualization. Uses O(1) `Map<id, record>` lookup. |
+| `buildFromRecords(records)` | Constructs full graph from ingested chunk records. Creates all node and edge types. Uses representative sampling for cross-document similarity. |
+| `expandResults(vectorResults, allRecords, k)` | Graph-enhanced search. For each vector result, traverses 2 hops. Returns combined results scored as `vectorScore - (graphScore * 0.15)`. Uses O(1) `Map<id, record>` lookup. |
 | `getNeighbors(id, edgeType?, maxDepth?)` | Depth-limited BFS traversal. Returns `{id, type, weight, depth}` for each neighbor. |
-| `toJSON()` / `fromJSON(data)` | Serialization via Map-to-array conversion. |
+| `toJSON()` / `fromJSON(data)` | Serialization via Map-to-array conversion. Used for graph persistence as JSONB in the `graphs` table. |
 
-### 2.9 `src/memory/conversation-memory.js`
+### 2.11 `src/memory/conversation-memory.js`
 
-The `ConversationMemory` class (~208 lines) provides persistent Q&A memory with feedback integration.
+The `ConversationMemory` class provides PostgreSQL-backed Q&A memory with HNSW retrieval and feedback integration.
 
-**Storage:**
-- `memories[]` — Full Q&A records with embeddings, quality scores, and feedback. Capped at `MAX_MEMORIES = 200` with oldest-first eviction.
-- `history[]` — Last 100 role/content messages for LLM context window
-- `ReasoningBank` — In-memory embedding store (rebuilt on load from persisted embeddings)
-- `SonaCoordinator` — Trajectory recording for pattern learning
-- `_cachedEmbedding` — Per-memory Float32Array cache, computed on load/store, excluded from serialization
-
-**Constructor options:**
-- `paths` — index paths for default memory file location
-- `opts.userId` — user ID for per-user memory directories
+**Constructor:** `new ConversationMemory(chatId, opts)`
+- `chatId` — the chat this memory belongs to (links to `chats` table)
+- `opts.userId` — user ID for memory entry prefixing
 - `opts.feedbackIndex` — shared `FeedbackIndex` instance for cross-user quality
-- `opts.memoryFile` — explicit memory file override (used by `ChatManager` for per-chat files)
 
 **Methods:**
 
 | Method | Description |
 |--------|-------------|
-| `load()` | Reads memory file, rebuilds ReasoningBank from stored embeddings, caches Float32Arrays. Idempotent (skips if already loaded). |
-| `save()` | Writes current state to memory file. Strips `_cachedEmbedding` fields, converts Float32Arrays to regular arrays. |
-| `store(query, answer, sources, queryEmbedding)` | Stores a new Q&A interaction with unique ID (includes userId prefix). Enforces `MAX_MEMORIES` cap. Records SONA trajectory with retrieval and generation steps. Auto-saves. Returns memoryId. |
-| `recordFeedback(memoryId, type, category?, comment?)` | Records feedback on a memory entry. Updates quality score, writes to shared feedback index, records SONA trajectory. Returns new quality score. |
-| `findRelevant(queryEmbedding, k?)` | Returns top-k past interactions with `(cosine similarity × quality) > 0.5`. Quality is `min(per-memory quality, shared feedback index quality)`. Uses cached Float32Arrays and shared `cosineSim` from `utils/math`. |
-| `getRecentHistory(n?)` | Returns last `n` messages from conversation history. |
-| `stats()` | Returns memory and SONA statistics. |
+| `store(query, answer, sources, queryEmbedding)` | INSERT into `memories` table (with `embedding::ruvector`) + INSERT into `chat_messages` (user + assistant). Enforces `MAX_MEMORIES = 200` cap per chat with LRU eviction. Returns memoryId. |
+| `recordFeedback(memoryId, type, category?, comment?)` | UPDATE `memories` SET quality + feedback. Writes to shared feedback index. Returns new quality. |
+| `findRelevant(queryEmbedding, k?)` | PostgreSQL HNSW search: `ORDER BY embedding <=> $1::ruvector`. Returns top-k past interactions with `(similarity × quality) > 0.5`. Quality is `min(per-memory quality, shared feedback index quality)`. |
+| `getRecentHistory(n?)` | SELECT from `chat_messages` ORDER BY created_at DESC LIMIT n. Returns in chronological order. |
+| `stats()` | Returns count of memories and messages for this chat. |
 
-### 2.9a `src/memory/chat-manager.js`
+### 2.12 `src/memory/chat-manager.js`
 
-The `ChatManager` class (~197 lines) provides per-user multi-chat isolation.
+The `ChatManager` class provides per-user multi-chat isolation backed by PostgreSQL.
 
-**Storage:**
-- `_meta` — `{ chats: [{id, title, createdAt, lastActivityAt}], activeChatId }` persisted to `chats.json`
-- `_memoryCache` — `Map<chatId, ConversationMemory>` for lazy-loaded memory instances
+**Constructor:** `new ChatManager(indexName, userId, feedbackIndex)`
 
 **Methods:**
 
 | Method | Description |
 |--------|-------------|
-| `load()` | Reads `chats.json`, migrates legacy `memory.json` if no chats exist, ensures at least one chat. |
-| `save()` | Writes `chats.json` metadata. |
-| `listChats()` | Returns all chats sorted by `lastActivityAt` descending. |
-| `createChat()` | Creates a new chat with random ID, sets it as active. |
-| `deleteChat(chatId)` | Deletes chat metadata and memory file. Validates chatId format to prevent path traversal. Switches active chat if needed. |
-| `getMemory(chatId)` | Returns `ConversationMemory` for a specific chat (lazy-loaded, cached). |
+| `load()` | Ensures at least one chat exists. Sets active chat from `is_active` flag or most recent. |
+| `listChats()` | SELECT from `chats` ORDER BY last_activity_at DESC. |
+| `createChat()` | INSERT INTO `chats`. Deactivates previous active chat. Returns new chat object. |
+| `deleteChat(chatId)` | DELETE FROM `chats` (cascades to messages + memories). Validates chatId format. Switches active chat if needed. |
+| `getMemory(chatId)` | Returns `ConversationMemory` for a specific chat (lazy-loaded, cached in Map). |
 | `getActiveMemory()` | Shortcut for `getMemory(activeChatId)`. |
 | `autoTitle(chatId, query)` | Sets chat title from first query (truncated to 50 chars). |
-| `renameChat(chatId, title)` | Renames a chat. |
-| `touchChat(chatId)` | Updates `lastActivityAt` timestamp. |
+| `renameChat(chatId, title)` | UPDATE chats SET title. |
+| `touchChat(chatId)` | UPDATE chats SET last_activity_at = NOW(). |
+| `setActiveChatId(chatId)` | UPDATE chats SET is_active. |
 
-### 2.9b `src/memory/feedback-index.js`
+### 2.13 `src/memory/feedback-index.js`
 
-The `FeedbackIndex` class (~95 lines) provides a content-keyed shared quality index.
+The `FeedbackIndex` class provides a content-keyed shared quality index backed by PostgreSQL.
 
-**Storage:** `feedback-index.json` — `{ [contentKey]: { quality, feedbacks[] } }`
+**Constructor:** `new FeedbackIndex()` (no arguments; PostgreSQL-backed)
 
 **Methods:**
 
 | Method | Description |
 |--------|-------------|
 | `computeKey(query, sources)` | SHA-256 hash of `query + sorted source files`, truncated to 16 hex chars. |
-| `record(key, type, category, comment, userId, query)` | Records feedback. Positive feedback doesn't degrade quality. Negative feedback sets quality to `min(current, category-based value)`. |
-| `getQuality(key)` | Returns shared quality score for a content key, or null if unknown. |
-| `stats()` | Returns entry count. |
+| `record(key, type, category, comment, userId, query)` | INSERT INTO `feedback` ... ON CONFLICT DO UPDATE. Appends feedback to JSONB array. Quality degrades to `LEAST(current, new)`. |
+| `getQuality(key)` | SELECT quality FROM `feedback` WHERE content_key = $1. Returns null if unknown. |
+| `stats()` | Returns entry count from `feedback` table. |
 
-### 2.10 `src/persistence/index-persistence.js`
+### 2.14 `src/persistence/index-persistence.js`
 
 | Function | Description |
 |----------|-------------|
-| `saveIndex(records, dim, graph, paths?)` | **Async.** Writes metadata as JSON, embeddings as raw Float32 binary, graph as JSON. When `RVF_AVAILABLE` and `paths` provided, builds HNSW persistent store via `buildRvfStore()`. Creates index directory if needed. |
-| `loadIndex()` | Reads metadata + binary embeddings, reconstructs Float32Arrays, deserializes graph via `KnowledgeGraph.fromJSON`. Returns `{ dim, records, graph, rvfFile }` or `null`. |
-| `loadIndexWithFallback(paths, indexName)` | Loads with paths, falls back to legacy root index if indexName is `Westpac`. |
+| `saveIndex(records, dim, graph, paths?, indexName?)` | **Async.** PostgreSQL transaction: DELETE existing data for index, batch INSERT documents (500/batch) with `Math.round(mtime)` for BIGINT compatibility, batch INSERT chunks with `embedding::ruvector` (500/batch). COMMIT or ROLLBACK. Graph is saved **separately** after the main transaction — a graph failure won't roll back chunk data. |
+| `loadIndex(paths?, indexName?)` | **Async.** SELECT chunks + documents from PostgreSQL. Reconstructs records array with same shape as ingestion output. Parses `ruvector` column back to Float32Array via `parseRuvectorToFloat32()`. Loads graph via `loadGraph()`. Returns `{ dim, records, graph }` or null. |
+| `loadIndexWithFallback(paths, indexName)` | **Async.** Delegates to `loadIndex()`. |
 
-**Binary format:** Embeddings are stored as a flat `Float32LE` buffer. Record `i`, dimension `j` is at byte offset `(i * dim + j) * 4`. For 13,000+ records at 384 dimensions, this produces a ~19 MB file.
+**Graph persistence:** The knowledge graph is serialized as JSONB in the `graphs` table:
 
-**RVF build:** When ruvector's RVF native binaries are available, `saveIndex()` also calls `buildRvfStore(paths.rvfFile, records, dim)` to create the HNSW persistent store. This is a transparent upgrade — the flat embeddings file is always written for backward compatibility and graph building.
+`saveGraph(graph, indexName)`:
+1. Serializes graph nodes and edges as a JSON object: `{ nodes: { id: {type, label, meta} }, edges: { sourceId: [{target, type, weight}] } }`
+2. `INSERT INTO graphs (index_name, data, node_count, edge_count, created_at) VALUES (...) ON CONFLICT (index_name) DO UPDATE`
 
-### 2.11 `src/retrieval/vector-search.js`
+`loadGraph(indexName)`:
+1. `SELECT data FROM graphs WHERE index_name = $1`
+2. Reconstructs `KnowledgeGraph` instance from JSONB — restores nodes, edges, `docChunks`, and `entityIndex` maps
+3. Returns null if no graph exists for the index
 
-```
-vectorSearch(queryVec: Float32Array, records: Object[], k: number) → [{id, score, record}]
-```
+**Note:** Graph save is performed outside the main chunk transaction. This design ensures that a graph serialization failure (e.g., very large graph) does not roll back the successfully inserted chunks and documents.
 
-Brute-force cosine distance search. Computes query norm once, then iterates all records. Returns top-k results sorted by ascending distance (lower = more similar). Uses `Float64Array` for scored distances to avoid precision loss.
-
-### 2.10a `src/persistence/rvf-store.js`
-
-Thin wrapper around ruvector's RVF (persistent HNSW) functions. All functions are no-ops when `RVF_AVAILABLE` is `false`.
-
-| Export | Type | Description |
-|--------|------|-------------|
-| `RVF_AVAILABLE` | `boolean` | `true` when `rv.isRvfAvailable()` reports native binaries present |
-| `buildRvfStore(rvfPath, records, dim)` | `async function` | Creates HNSW store, ingests vectors in batches of 1,000 (IDs are string-encoded array indices), compacts, closes. Options: `{ dimensions, metric: 'cosine', m: 16, efConstruction: 200 }` |
-| `openRvfStoreForQuery(rvfPath)` | `async function` | Opens an existing `.rvf` file for querying. Returns store handle or `null`. |
-| `queryRvfStore(store, queryVec, k, opts?)` | `async function` | HNSW k-NN search. Returns `[{ id, distance }]`. Default `efSearch: 64`. |
-| `closeRvfStore(store)` | `async function` | Closes an open store handle. |
-
-**RVF ID scheme:** IDs must be string-encoded u64 integers. The store uses array indices (`"0"`, `"1"`, ..., `"N-1"`) as IDs. At query time, results map back to records via `records[parseInt(id, 10)]`.
-
-### 2.12 `src/retrieval/retrieve.js`
+### 2.15 `src/retrieval/retrieve.js`
 
 ```
-retrieve(query, index, { k?, graphMode?, memory?, rvfStore? }) → { results, path, mode, queryVec }
+retrieve(query, index, { k?, graphMode?, memory?, indexName? }) → { results, path, mode, queryVec }
 ```
 
 Orchestrates the full retrieval pipeline:
 1. Rewrites query if follow-up detected (via `rewriteQuery`)
-2. Embeds query via ONNX
-3. If `rvfStore` provided: runs HNSW search via `queryRvfStore()`, maps results back to `index.records[]` by parsing string IDs as array indices. Falls back to brute-force on error.
-4. If no `rvfStore` or HNSW failed: runs `vectorSearch()` brute-force cosine distance
-5. If graph available, runs `expandResults` for graph-boosted ranking
-6. Returns results, graph traversal path (for viz), mode label (`hnsw+graph` | `hnsw` | `vector+graph` | `vector`), and `queryVec`
+2. Embeds query via ONNX (`rv.embed()`)
+3. Executes PostgreSQL hybrid search: HNSW vector + BM25 text, fused via RRF
+4. If graph available, runs `expandResults` for graph-boosted ranking
+5. Returns results, graph traversal path (for viz), mode label (`hybrid+graph` | `hybrid`), and `queryVec`
 
-### 2.13 `src/llm/client.js`
+**Hybrid search SQL** (simplified):
+```sql
+WITH vector_results AS (
+  SELECT ... c.embedding <=> $1::ruvector AS distance ...
+  ORDER BY c.embedding <=> $1::ruvector LIMIT $3
+),
+text_results AS (
+  SELECT ... ts_rank(c.tsv, plainto_tsquery('english', $4)) AS text_rank ...
+  WHERE c.tsv @@ plainto_tsquery('english', $4) ...
+),
+ranked AS (
+  SELECT *, 1.0 / (60 + ROW_NUMBER() OVER (...)) AS rrf_score FROM vector_results
+  UNION ALL
+  SELECT *, 1.0 / (60 + ROW_NUMBER() OVER (...)) AS rrf_score FROM text_results
+),
+fused AS (
+  SELECT ..., SUM(rrf_score) AS combined_rrf FROM ranked GROUP BY ...
+)
+SELECT * FROM fused ORDER BY combined_rrf DESC LIMIT $3
+```
+
+### 2.16 `src/llm/client.js`
 
 Shared HTTP client for OpenAI-compatible APIs with streaming support.
 
@@ -369,15 +357,15 @@ Shared HTTP client for OpenAI-compatible APIs with streaming support.
 
 Parameters: temperature 0.2, max_tokens 2048, 60s timeout via AbortController.
 
-### 2.14 `src/llm/query-rewrite.js`
+### 2.17 `src/llm/query-rewrite.js`
 
 ```
 rewriteQuery(query, memory) → string
 ```
 
-Detects follow-up queries (short queries or those starting with referential language like "what about", "same for", etc.) and rewrites them into standalone search queries using the LLM. Returns the original query unchanged if no rewrite is needed.
+Detects follow-up queries and rewrites them into standalone search queries using the LLM. Returns the original query unchanged if no rewrite is needed.
 
-### 2.15 `src/llm/rag.js`
+### 2.18 `src/llm/rag.js`
 
 ```
 ragAnswer(query, results, memory?, { stream?, queryVec?, domain? }) → { answer, sources, memoryId, usage }
@@ -385,34 +373,68 @@ ragAnswerStream(query, results, memory, onToken, { queryVec?, domain? }) → { a
 getSystemPrompt(domain) → string
 ```
 
-Central RAG module used by both CLI and web server. Supports domain-aware system prompts via the `domain` parameter.
+Central RAG module. Supports domain-aware system prompts via the `domain` parameter.
 
 **Domain prompts:**
-- `Westpac` — Financial products, regulatory guidance, risk management (default)
+- `Westpac` — Financial products, regulatory guidance, risk management
 - `ServicesAustralia` — Government payments, eligibility criteria, entitlements
 
 Shared helpers:
 - `buildRagContext()` — constructs messages array with system prompt, history, memory context, and feedback annotations
 - `buildSourcesSummary()` — formats results into source metadata
 
-All modes store the interaction in memory (if available) and return `{ answer, sources, memoryId, usage }`. When past interactions had negative feedback, the annotation "avoid repeating same issues" is included in the LLM context.
+All modes store the interaction in memory (if available) and return `{ answer, sources, memoryId, usage }`. Accepts optional `queryVec` to avoid re-embedding the query.
 
-### 2.15a `src/llm/usage-tracker.js`
+### 2.19 `src/llm/usage-tracker.js`
 
-The `UsageTracker` class (~99 lines) provides per-user and per-model token counting with cost estimation.
+The `UsageTracker` class provides per-user and per-model token counting, backed by PostgreSQL.
 
-**Storage:** `usage-stats.json` — `{ totals, byUser, byModel, recent[] }`
+**Constructor:** `new UsageTracker()` (no arguments; PostgreSQL-backed)
 
 **Methods:**
 
 | Method | Description |
 |--------|-------------|
-| `record(userId, model, usage)` | Accumulates prompt/completion tokens and estimated cost. Logs to console. Persists to disk. Keeps last 100 recent entries. |
-| `getStats()` | Returns `{ totals, byUser, byModel, recent }`. |
+| `record(userId, model, usage)` | INSERT INTO `usage_stats`. Estimates cost from built-in model pricing or custom env vars. |
+| `getStats()` | Aggregate queries: totals, byUser, byModel, recent (last 100). All async via `db.query()`. |
 
-Cost estimation uses built-in pricing for gpt-4o-mini, gpt-4o, gpt-4-turbo, or custom pricing via `LLM_COST_PER_1K_INPUT` / `LLM_COST_PER_1K_OUTPUT` env vars.
+### 2.20 `src/server/auth.js`
 
-### 2.16 `src/server/viz-builder.js`
+Keycloak OIDC authentication module. Sessions are PostgreSQL-backed via `SessionStore`.
+
+| Function / Class | Description |
+|----------|-------------|
+| `SessionStore` | PostgreSQL-backed session store. All methods are async. |
+| `initSessionStore()` | Creates a `SessionStore`, prunes expired sessions, starts prune timer. Async. |
+| `getSessionStore()` | Returns the initialized store. |
+| `getAuthConfig()` | Returns auth config from env vars, or null if `KEYCLOAK_URL` is not set. |
+| `validateIdToken(idToken, config)` | Validates JWT against Keycloak's JWKS endpoint. Returns `{ sub, email, name, roles }`. |
+| `createSession(userId, email, name, roles, ttl)` | Async. Creates a session via `getSessionStore().set()`. Returns session ID. |
+| `getSession(req)` | Async. Looks up session from `grover_session` cookie. Checks TTL, deletes expired. |
+| `requireAuth(req, res, config)` | Async middleware. Returns user object, or sends 401 and returns null. |
+| `requireAdmin(req, res, config)` | Async middleware. Checks for `admin` role. Returns user or sends 401/403. |
+| `handleAuthRoute(req, res, config)` | Async route handler for auth endpoints. |
+
+**SessionStore methods:**
+
+| Method | Description |
+|--------|-------------|
+| `load()` | Prunes expired sessions, logs count from PostgreSQL |
+| `get(id)` | SELECT FROM `sessions` WHERE id = $1 |
+| `has(id)` | Async (returns Promise<boolean>) — delegates to `get()` |
+| `set(id, session)` | INSERT ... ON CONFLICT DO UPDATE into `sessions` |
+| `delete(id)` | DELETE FROM `sessions` WHERE id = $1 |
+| `pruneExpired()` | DELETE FROM `sessions` WHERE created_at + ttl < now |
+| `startPruneTimer(interval)` | Starts periodic cleanup (default 5 min). Timer uses `.unref()`. |
+| `shutdown()` | Clears timer, final prune |
+
+Cookie: `grover_session`, HttpOnly, SameSite=Lax. Sessions survive server restarts via PostgreSQL.
+
+### 2.21 `src/server/admin-api.js`
+
+Admin panel routes. Proxies user management operations to the Keycloak Admin REST API. All routes require `admin` role (checked via async `requireAdmin()`).
+
+### 2.22 `src/server/viz-builder.js`
 
 ```
 buildVizData(graph) → { nodes[], edges[] }
@@ -421,257 +443,163 @@ buildVizData(graph) → { nodes[], edges[] }
 Transforms the internal knowledge graph into a visualization-friendly format:
 - Excludes chunk nodes (too numerous for visualization)
 - Collapses chunk-to-entity edges to document-to-entity edges
-- Limits entity mention edges to top 3 per entity by accumulated weight
+- Limits entity mention edges to top 3 per entity
 - Limits similarity edges to top 3 per document
-- Prunes orphan entity/concept nodes with no edges
-- Adds `chunkCount` to document nodes and `degree` to entity nodes
+- Prunes orphan entity/concept nodes
+- Performs retroactive category inference and brand/category deduplication
 
-**Additional processing:**
-- **Retroactive category inference**: reassigns documents classified as `general` to inferred categories via `inferCategoryFromFilename()`
-- **Brand/category deduplication**: merges legacy brand nodes that duplicate category nodes (for SA graphs where `SA_BRANDS` was emptied after initial ingestion)
-- **Hub suppression**: skips `category:general` if it still has >50 docs after inference
-
-### 2.16a `src/server/viz-path.js`
+### 2.23 `src/server/viz-path.js`
 
 ```
 buildCitedVizPath(graph, sources, vizData) → { nodes[], edges[] } | null
 ```
 
-Extracts the subgraph of nodes and edges connected to cited source documents, for highlighting in the visualization. Includes:
-1. Direct brand/category/product/concept connections from the raw graph
-2. Doc-to-doc relationships (semantically_similar, shared_concept) from viz data
-3. Shared entities connected to 2+ cited documents
-4. Deduplicates edges by `source|target|type` key
+Extracts the subgraph of nodes and edges connected to cited source documents, for highlighting in the visualization.
 
-### 2.17 `src/server/auth.js`
+### 2.24 Command Modules (`src/commands/`)
 
-Keycloak OIDC authentication module. Lazy-loads `jose` for JWT/JWKS operations. Sessions are file-backed via `SessionStore`.
-
-| Function / Class | Description |
-|----------|-------------|
-| `SessionStore` | File-backed session store (replaces bare `Map`). Persists to `sessions.json`. |
-| `initSessionStore(filePath)` | Creates a `SessionStore`, loads existing sessions from disk, starts prune timer. |
-| `getSessionStore()` | Returns the initialized store (falls back to in-memory-only if not initialized). |
-| `getAuthConfig()` | Returns auth config from env vars, or null if `KEYCLOAK_URL` is not set. Computes all OIDC endpoint URLs. |
-| `validateIdToken(idToken, config)` | Validates JWT against Keycloak's JWKS endpoint. Returns `{ sub, email, name, roles }`. |
-| `createSession(userId, email, name, roles, ttl)` | Creates a session via `getSessionStore().set()`. Returns session ID. |
-| `getSession(req)` | Looks up session from `grover_session` cookie. Checks TTL, deletes expired. Returns user object or null. |
-| `requireAuth(req, res, config)` | Middleware: returns user object, or sends 401 and returns null. When auth is disabled, returns anonymous user. |
-| `requireAdmin(req, res, config)` | Middleware: checks for `admin` role. Returns user or sends 401/403. When auth is disabled, returns 403. |
-| `handleAuthRoute(req, res, config)` | Route handler for `/auth/callback`, `/api/auth/session`, `/api/auth/logout`, `/api/auth/me`. |
-
-**SessionStore class:**
-
-| Method | Description |
-|--------|-------------|
-| `load()` | Reads `sessions.json`, filters expired entries |
-| `save()` | Writes to disk when dirty flag is set |
-| `get(id)` | Returns session data |
-| `has(id)` | Returns boolean |
-| `set(id, session)` | Write-through: sets in Map and immediately saves to disk |
-| `delete(id)` | Marks dirty (batched save via next prune cycle) |
-| `pruneExpired()` | Removes expired entries, saves if any pruned |
-| `startPruneTimer(interval)` | Starts periodic cleanup (default 5 min). Timer uses `.unref()` to not prevent exit. |
-| `shutdown()` | Clears timer, prunes, final save |
-
-Cookie: `grover_session`, HttpOnly, SameSite=Lax. Sessions survive server restarts via the file-backed store.
-
-### 2.17a `src/server/admin-api.js`
-
-Admin panel routes (~246 lines). Proxies user management operations to the Keycloak Admin REST API.
-
-| Function | Description |
-|----------|-------------|
-| `handleAdminRoute(req, res, config, readBody, usageTracker)` | Route handler for all `/admin` and `/api/admin/*` routes. All routes require `admin` role. |
-
-Uses a cached admin access token obtained via password grant from Keycloak's master realm. Token auto-refreshes 30s before expiry.
-
-### 2.18 `src/server/chat-panel.html`
-
-A self-contained HTML fragment containing CSS styles, HTML markup, and JavaScript for the chat panel. Injected into `graph-viz.html` at serve time via string replacement. Features:
-- Message rendering with markdown-like formatting
-- Source citation click-to-focus (delegates to graph-viz.html's `focusNode`)
-- Graph path highlighting on query response
-- Multi-chat sidebar (create, switch, rename, delete)
-- Feedback buttons (thumbs up/down with categorization modal)
-- Memory clear via `/api/forget`
-- User session display and logout button (when auth enabled)
-
-### 2.19 Command Modules (`src/commands/`)
-
-| Command | Lines | Description |
-|---------|-------|-------------|
-| `ingest.js` | ~130 | Batch child process orchestrator: discovers files, splits into batches of 500, spawns `embed-batch.js` workers, merges results, builds graph, saves index. Parent never loads ONNX. |
-| `update.js` | ~150 | Incremental: detects new/modified/deleted files by mtime, streams existing embeddings to disk, processes changes via batch child processes, merges results, rebuilds graph |
-| `search.js` | 30 | Loads index, opens RVF store if available, calls `retrieve` with HNSW, prints formatted results, closes store |
-| `ask.js` | 27 | Loads index + memory, calls `retrieve` + `ragAnswer` with streaming and domain parameter |
-| `interactive.js` | 184 | Full REPL with flags (`--flat`, `--k N`, `--search`, `--related`, `--entities`, `--memory`, `--forget`) |
-| `serve.js` | ~430 | HTTP server with auth, admin, chat management, feedback, TTS, SSE streaming, graceful shutdown. Manages per-user ChatManagers, UsageTracker, persistent sessions, and RVF HNSW store lifecycle. |
-| `stats.js` | 65 | Reads index/graph/memory and prints statistics with debug logging |
+| Command | Description |
+|---------|-------------|
+| `ingest.js` | Dual-path ingestion: discovers files, embeds via in-process (PDFs/small corpora) or batch child processes (large markdown corpora), builds graph, saves to PostgreSQL via `saveIndex()`. Calls `initDb()` on startup. |
+| `update.js` | Incremental: detects new/modified/deleted files by comparing corpus against `SELECT file, mtime FROM documents`. Processes changes via batch child processes, merges, rebuilds graph, saves to PostgreSQL. |
+| `search.js` | Calls `initDb()`, loads index from PostgreSQL, calls `retrieve()` with indexName, prints formatted results. |
+| `ask.js` | Calls `initDb()`, creates temporary chat in PostgreSQL, calls `retrieve()` + `ragAnswer()`, cleans up temp chat. |
+| `interactive.js` | Full REPL with flags (`--flat`, `--k N`, `--search`, `--related`, `--entities`, `--memory`, `--forget`). Creates temp chat in PostgreSQL. Calls `initDb()` on startup. |
+| `serve.js` | HTTP server with auth, admin, chat management, feedback, TTS, SSE streaming, graceful shutdown. Calls `initDb()` on startup. Manages per-user ChatManagers, UsageTracker, PostgreSQL sessions. On shutdown, prunes sessions and calls `closePool()`. |
+| `stats.js` | Queries PostgreSQL for chunk/document counts, table sizes via `pg_size_pretty`, graph stats, and conversation data counts (chats, messages, memories). |
+| `bootstrap.js` | Restores database from a `pg_dump` seed file (default: `config/grover-seed.dump`). Checks if data exists first (`SELECT count(id) FROM chunks` — uses `count(id)` due to ruvector `count(*)` bug). Runs `pg_restore --no-owner --no-privileges`. Calls `initDb()` on startup. |
 
 ---
 
 ## 3. Data Formats
 
-### 3.1 `metadata.json`
+### 3.1 PostgreSQL Schema (`config/init.sql`)
 
-```json
-{
-  "dim": 384,
-  "count": 6220,
-  "records": [
-    {
-      "id": "Westpac/wbc/fx/WBC-FXSwapPDS.pdf::chunk0",
-      "file": "Westpac/wbc/fx/WBC-FXSwapPDS.pdf",
-      "chunk": 0,
-      "totalChunks": 15,
-      "pages": 20,
-      "pageStart": 1,
-      "pageEnd": 2,
-      "preview": "First 200 chars of chunk text...",
-      "text": "Full chunk text...",
-      "mtime": 1700000000000
-    }
-  ]
-}
-```
+#### `documents` table
 
-### 3.2 `embeddings.bin`
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | `SERIAL PRIMARY KEY` | Auto-incrementing document ID |
+| `index_name` | `TEXT NOT NULL` | Index this document belongs to |
+| `file` | `TEXT NOT NULL` | Relative file path within corpus |
+| `page_count` | `INT` | Number of pages in source document |
+| `mtime` | `BIGINT` | File modification time (for incremental updates) |
+| `url` | `TEXT` | Source URL (from markdown front-matter) |
+| `title` | `TEXT` | Document title |
+| `created_at` | `TIMESTAMPTZ` | Insertion timestamp |
 
-Raw binary file. `count * dim * 4` bytes. Each float is 32-bit little-endian. Record `i` starts at byte offset `i * dim * 4`.
+Unique constraint: `(index_name, file)`.
 
-### 3.3 `graph.json`
+#### `chunks` table
 
-Serialized Maps as arrays of `[key, value]` pairs:
-```json
-{
-  "nodes": [["brand:wbc", {"type": "brand", "label": "Westpac", "meta": {}}], ...],
-  "edges": [["brand:wbc", [{"target": "doc:...", "type": "belongs_to_brand", "weight": 1}]], ...],
-  "entityIndex": [["product:forward contract", ["chunk-id-1", "chunk-id-2"]], ...],
-  "docChunks": [["Westpac/wbc/fx/file.pdf", ["chunk-id-1", "chunk-id-2"]], ...]
-}
-```
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | `SERIAL PRIMARY KEY` | Auto-incrementing chunk ID |
+| `index_name` | `TEXT NOT NULL` | Index this chunk belongs to |
+| `document_id` | `INT REFERENCES documents(id) ON DELETE CASCADE` | Parent document |
+| `chunk_index` | `INT NOT NULL` | Position within document (0-based) |
+| `total_chunks` | `INT` | Total chunks in parent document |
+| `content` | `TEXT NOT NULL` | Full chunk text |
+| `preview` | `TEXT` | First 200 chars of chunk text |
+| `page_start` | `INT` | Starting page number |
+| `page_end` | `INT` | Ending page number |
+| `pages` | `INT` | Total pages in parent document |
+| `embedding` | `ruvector(384)` | ONNX embedding (all-MiniLM-L6-v2) |
+| `tsv` | `tsvector GENERATED ALWAYS AS (to_tsvector('english', content)) STORED` | Full-text search vector |
+| `created_at` | `TIMESTAMPTZ` | Insertion timestamp |
 
-### 3.4 `chats.json`
+Indexes:
+- `chunks_embedding_idx` — `USING hnsw (embedding ruvector_cosine_ops) WITH (m = 16, ef_construction = 200)`
+- `chunks_tsv_idx` — `USING gin(tsv)`
+- `chunks_index_name_idx` — B-tree on `index_name`
 
-Per-user (or per-index for anonymous) chat metadata:
-```json
-{
-  "chats": [
-    {
-      "id": "chat-a1b2c3d4e5f6",
-      "title": "JobSeeker eligibility requirements",
-      "createdAt": "2025-01-01T00:00:00.000Z",
-      "lastActivityAt": "2025-01-01T01:00:00.000Z"
-    }
-  ],
-  "activeChatId": "chat-a1b2c3d4e5f6"
-}
-```
+#### `sessions` table
 
-Each chat's conversation memory is stored in a separate file: `chat-<chatId>.json` (same format as legacy `memory.json`).
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | `TEXT PRIMARY KEY` | Session UUID |
+| `user_id` | `TEXT NOT NULL` | Keycloak subject ID |
+| `email` | `TEXT` | User email |
+| `name` | `TEXT` | User display name |
+| `roles` | `JSONB DEFAULT '[]'` | Keycloak realm roles |
+| `created_at` | `BIGINT NOT NULL` | Creation timestamp (ms since epoch) |
+| `ttl` | `BIGINT NOT NULL` | Time-to-live (ms) |
 
-### 3.5 `feedback-index.json`
+#### `chats` table
 
-```json
-{
-  "a1b2c3d4e5f6g7h8": {
-    "quality": 0.3,
-    "feedbacks": [
-      {
-        "type": "negative",
-        "category": "wrong-answer-right-docs",
-        "comment": "The answer confused two different payments",
-        "userId": "user-123",
-        "query": "What is the income test for JobSeeker?",
-        "timestamp": "2025-01-01T00:00:00.000Z"
-      }
-    ]
-  }
-}
-```
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | `TEXT PRIMARY KEY` | Chat ID (format: `chat-<uuid12>`) |
+| `index_name` | `TEXT NOT NULL` | Index this chat is associated with |
+| `user_id` | `TEXT NOT NULL` | Owner user ID |
+| `title` | `TEXT` | Chat title (auto-set from first query) |
+| `created_at` | `TIMESTAMPTZ` | Creation timestamp |
+| `last_activity_at` | `TIMESTAMPTZ` | Last activity timestamp |
+| `is_active` | `BOOLEAN DEFAULT false` | Whether this is the user's active chat |
 
-### 3.6 `usage-stats.json`
+Index: `chats_user_idx` on `(index_name, user_id)`.
 
-```json
-{
-  "totals": {
-    "promptTokens": 15000,
-    "completionTokens": 5000,
-    "totalTokens": 20000,
-    "requests": 50,
-    "estimatedCost": 0.0075
-  },
-  "byUser": {
-    "user-123": { "promptTokens": 10000, "completionTokens": 3000, "totalTokens": 13000, "requests": 30, "estimatedCost": 0.005 }
-  },
-  "byModel": {
-    "gpt-4o-mini": { "promptTokens": 15000, "completionTokens": 5000, "totalTokens": 20000, "requests": 50, "estimatedCost": 0.0075 }
-  },
-  "recent": [
-    { "timestamp": "2025-01-01T00:00:00.000Z", "userId": "user-123", "model": "gpt-4o-mini", "promptTokens": 300, "completionTokens": 100, "cost": 0.0001 }
-  ]
-}
-```
+#### `chat_messages` table
 
-### 3.7 Per-chat memory file (`chat-<chatId>.json`)
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | `SERIAL PRIMARY KEY` | Auto-incrementing message ID |
+| `chat_id` | `TEXT REFERENCES chats(id) ON DELETE CASCADE` | Parent chat |
+| `role` | `TEXT NOT NULL` | `'user'` or `'assistant'` |
+| `content` | `TEXT NOT NULL` | Message text |
+| `sources` | `JSONB` | Source citations (assistant messages only) |
+| `memory_id` | `TEXT` | Associated memory entry ID |
+| `created_at` | `TIMESTAMPTZ` | Message timestamp |
 
-Same format as legacy `memory.json`, with added feedback fields:
-```json
-{
-  "history": [
-    {"role": "user", "content": "...", "timestamp": "2025-01-01T00:00:00.000Z"},
-    {"role": "assistant", "content": "...", "timestamp": "2025-01-01T00:00:00.000Z", "sources": [...], "memoryId": "mem-..."}
-  ],
-  "memories": [
-    {
-      "id": "mem-user123-1700000000000",
-      "query": "What is a forward contract?",
-      "answer": "A forward contract is...",
-      "sources": [{"file": "...", "pageStart": 1, "pageEnd": 2, "score": 0.85}],
-      "embedding": [0.1, 0.2, ...],
-      "timestamp": "2025-01-01T00:00:00.000Z",
-      "quality": 1.0,
-      "feedback": {
-        "type": "positive",
-        "category": null,
-        "comment": null,
-        "timestamp": "2025-01-01T00:01:00.000Z"
-      }
-    }
-  ]
-}
-```
+#### `memories` table
 
-### 3.8 `sessions.json`
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | `TEXT PRIMARY KEY` | Memory ID (format: `mem-<userId8>-<timestamp>`) |
+| `chat_id` | `TEXT REFERENCES chats(id) ON DELETE CASCADE` | Parent chat |
+| `query` | `TEXT NOT NULL` | User's question |
+| `answer` | `TEXT NOT NULL` | Generated answer |
+| `sources` | `JSONB` | Source citations |
+| `embedding` | `ruvector(384)` | Query embedding for HNSW similarity search |
+| `quality` | `FLOAT DEFAULT 1.0` | Quality score (degraded by negative feedback) |
+| `feedback` | `JSONB` | Feedback data (type, category, comment, timestamp) |
+| `created_at` | `TIMESTAMPTZ` | Creation timestamp |
 
-File-backed session store. Written by `SessionStore` on session create and periodic prune.
-```json
-{
-  "a1b2c3d4-e5f6-7890-abcd-ef1234567890": {
-    "userId": "keycloak-sub-id",
-    "email": "user@example.com",
-    "name": "Jane Doe",
-    "roles": ["user"],
-    "createdAt": 1700000000000,
-    "ttl": 86400000
-  }
-}
-```
+Index: `memories_embedding_idx` — `USING hnsw (embedding ruvector_cosine_ops) WITH (m = 16, ef_construction = 64)`
 
-Entries are filtered on load: any session where `Date.now() > createdAt + ttl` is discarded. The file is stored at `<INDEX_DIR>/sessions.json` by default (overridable via `SESSION_FILE` env var). Added to `.gitignore`.
+#### `feedback` table
 
-### 3.9 `vectors.rvf`
+| Column | Type | Description |
+|--------|------|-------------|
+| `content_key` | `TEXT PRIMARY KEY` | SHA-256 hash of query + sorted source files (16 hex chars) |
+| `quality` | `FLOAT DEFAULT 1.0` | Shared quality score (minimum across all feedbacks) |
+| `feedbacks` | `JSONB DEFAULT '[]'` | Array of feedback entries |
 
-Binary HNSW persistent store created by `@ruvector/rvf`. Contains a Hierarchical Navigable Small World graph index for approximate nearest neighbor search. For 13,211 vectors at 384 dimensions, the file is ~19.5 MB.
+#### `usage_stats` table
 
-- Built during ingestion by `buildRvfStore()` in batches of 1,000
-- Parameters: `metric: 'cosine'`, `m: 16`, `efConstruction: 200`
-- IDs are string-encoded array indices (`"0"` through `"N-1"`)
-- Stored at `<indexDir>/vectors.rvf` per named index
-- Added to `.gitignore`
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | `SERIAL PRIMARY KEY` | Auto-incrementing ID |
+| `user_id` | `TEXT NOT NULL` | User who made the request |
+| `model` | `TEXT NOT NULL` | LLM model used |
+| `prompt_tokens` | `INT DEFAULT 0` | Prompt token count |
+| `completion_tokens` | `INT DEFAULT 0` | Completion token count |
+| `cost` | `FLOAT DEFAULT 0` | Estimated cost |
+| `created_at` | `TIMESTAMPTZ` | Request timestamp |
 
-### 3.10 `/api/ask` Response
+#### `graphs` table
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `index_name` | `TEXT PRIMARY KEY` | Index this graph belongs to |
+| `data` | `JSONB NOT NULL` | Serialized graph: `{ nodes: { id: {type, label, meta} }, edges: { sourceId: [{target, type, weight}] } }` |
+| `node_count` | `INT DEFAULT 0` | Number of nodes (for stats display) |
+| `edge_count` | `INT DEFAULT 0` | Number of edges (for stats display) |
+| `created_at` | `TIMESTAMPTZ` | Last rebuild timestamp |
+
+One row per index. The graph is rebuilt on each full ingest and saved separately from the chunk transaction.
+
+### 3.2 `/api/ask` Response
 
 ```json
 {
@@ -683,7 +611,7 @@ Binary HNSW persistent store created by `@ruvector/rvf`. Contains a Hierarchical
     "nodes": ["doc:Westpac/wbc/fx/WBC-FXSwapPDS.pdf", "brand:wbc", "category:fx"],
     "edges": [{"source": "doc:...", "target": "brand:wbc", "type": "belongs_to_brand"}]
   },
-  "mode": "hnsw+graph",
+  "mode": "hybrid+graph",
   "memoryId": "mem-user123-1700000000000"
 }
 ```
@@ -692,13 +620,18 @@ Binary HNSW persistent store created by `@ruvector/rvf`. Contains a Hierarchical
 
 ## 4. Scoring Algorithm
 
-### 4.1 Vector Score
+### 4.1 Hybrid Search (RRF)
 
-Cosine distance: `1 - (dot(q, e) / (||q|| * ||e||))`. Range [0, 2]. Lower is better.
+Vector and text results are each ranked independently. Each result gets an RRF score:
+```
+rrf_score = 1 / (60 + rank)
+```
+
+For results appearing in both lists, their RRF scores are summed. Final results are ordered by descending `combined_rrf`.
 
 ### 4.2 Graph Score
 
-Accumulated from graph traversal of each vector result (2-hop max):
+Accumulated from graph traversal of each hybrid result (2-hop max):
 - Direct neighbor (depth 0): `edge.weight * 1.0`
 - Indirect neighbor (depth 1+): `edge.weight * 0.5`
 
@@ -713,7 +646,7 @@ The graph boost lowers the effective distance, promoting results that are both s
 ### 4.4 Memory Relevance Score
 
 ```
-memoryScore = cosineSimilarity(queryEmbedding, pastQueryEmbedding) × quality
+memoryScore = (1 - hnswDistance) × quality
 quality = min(perMemoryQuality, sharedFeedbackQuality)
 ```
 
@@ -721,102 +654,78 @@ Only past interactions with `memoryScore > 0.5` are included in RAG context.
 
 ---
 
-## 5. Refactoring Decisions
+## 5. Operational Improvements
 
-### 5.1 Eliminated Duplications
+### 5.1 Dual-Path Embedding
 
-| Duplication | Before | After |
-|------------|--------|-------|
-| Cosine similarity | Inline in `ConversationMemory.findRelevant` (6 lines) + standalone `cosineSim` (8 lines) | Single `cosineSim` in `utils/math.js`, imported by both |
-| RAG logic in serve | `/api/ask` handler duplicated ~25 lines of context-building, LLM calling, and memory storing from `ragAnswer` | `ragAnswer(query, results, memory, { stream: false })` — one call, returns `{ answer, sources }` |
-| Chat panel HTML | 265-line template string embedded in JS | Separate `chat-panel.html` file, loaded with `fs.readFileSync` |
-| Viz path building | Identical logic in `/api/ask` and `/api/ask-stream` | Shared `buildCitedVizPath()` in `src/server/viz-path.js` |
-| SSE parsing | ~95% identical code in `callLLM` and `callLLMStream` | Shared `streamSSE(response, onToken)` helper |
-| RAG message building | Duplicated in `ragAnswer` and `ragAnswerStream` | Shared `buildRagContext()` helper |
-| Index loading | 3-line fallback pattern in 6 command files | `loadIndexWithFallback(paths, indexName)` in persistence module |
-
-### 5.2 Module Size Distribution
-
-No module exceeds 400 lines (serve.js with all route handlers). Most modules are under 150 lines:
-
-| Range | Count | Modules |
-|-------|-------|---------|
-| 10-20 lines | 3 | math, chunking, search cmd |
-| 20-50 lines | 5 | domain-constants, formatting, retrieve, ask cmd, viz-path |
-| 50-120 lines | 10 | pdf, markdown, client, query-rewrite, rag, embed-batch, stats, feedback-index, usage-tracker, entity-extraction |
-| 120-250 lines | 7 | config, ingest, update, interactive, conversation-memory, chat-manager, admin-api |
-| 250-400 lines | 3 | knowledge-graph, auth, serve |
-
----
-
-## 6. Operational Improvements
-
-### 6.1 Batch Child Process Embedding
-
-The ONNX WASM runtime pre-allocates ~4GB of WebAssembly memory that V8 counts against Node.js's heap limit. Previous single-process ingestion would OOM after 1-2 files because the WASM allocation left no room for actual work.
-
-**Architecture:**
 ```
-ingest.js (parent)                    embed-batch.js (child × N)
-  │                                     │
-  ├─ Discover files                     ├─ Load ONNX model (~4GB WASM)
-  ├─ Split into batches of 500          ├─ For each file:
-  ├─ For each batch:                    │   ├─ Parse (PDF/Markdown)
-  │   ├─ Spawn child process            │   ├─ Chunk text
-  │   │   (--max-old-space-size=6144)   │   ├─ Embed chunks
-  │   ├─ Pipe file paths via stdin      │   └─ Write embedding to .emb
-  │   ├─ Wait for child to exit         ├─ Write metadata to .json
-  │   └─ Read batch results             └─ Exit (OS reclaims WASM)
-  ├─ Merge all batch embeddings
+ingest.js (parent)
+  │
+  ├─ Discover files (PDFs + Markdown)
+  │
+  ├─ Route: PDFs present OR ≤500 files?
+  │   │
+  │   ├── YES → ingestInProcess()
+  │   │         │
+  │   │         ├─ Load ONNX model once (~4GB WASM)
+  │   │         ├─ For each file:
+  │   │         │   ├─ Parse (PDF/Markdown)
+  │   │         │   ├─ Chunk text
+  │   │         │   └─ Embed chunks (rv.embed)
+  │   │         └─ Return records + dim
+  │   │
+  │   └── NO → ingestBatched()
+  │             │
+  │             ├─ Split into batches of 500
+  │             ├─ For each batch:
+  │             │   ├─ Spawn child process
+  │             │   │   (--max-old-space-size=4096)
+  │             │   ├─ Child: load ONNX → embed → write .emb/.json → exit
+  │             │   └─ Parent: read batch results
+  │             ├─ Merge all batch embeddings
+  │             └─ Return records + dim
+  │
   ├─ Build knowledge graph
-  └─ Save index
+  └─ Save to PostgreSQL
+      ├─ Transaction: documents + chunks (batch 500/stmt)
+      └─ Separate: graph as JSONB in graphs table
 ```
 
-### 6.2 Chunking Loop Fix
+### 5.2 PostgreSQL Persistence
 
-The `chunkText()` function had an infinite loop bug: when the remaining text at the end of a document was shorter than the overlap parameter (200 chars), `start = end - overlap` would not advance past the current position, creating millions of duplicate chunks. Fixed by:
-1. Breaking when `end >= cleaned.length` (reached end of text)
-2. Breaking when `newStart <= start` (no forward progress)
-3. Renaming the inner `chunkText` variable to `slice` to avoid shadowing the function name
+All state is stored in PostgreSQL. Benefits over the previous file-based approach:
+- **Transactions** for atomic index updates (full re-ingest or rollback)
+- **Concurrent access** for multi-user web UI
+- **Backup/restore** via standard PostgreSQL tools
+- **HNSW indexing** built into the database (no separate RVF store lifecycle)
+- **BM25 full-text search** via built-in `tsvector` + GIN index
+- **Graph storage** as JSONB in the `graphs` table (one row per index)
 
-### 6.3 Domain-Aware RAG Prompts
+### 5.3 Graceful Server Shutdown
 
-The RAG system prompt is now selected based on the active index domain:
+The web server handles SIGTERM and SIGINT signals:
+- Prunes expired sessions via PostgreSQL
+- Closes the PostgreSQL connection pool
+- Stops accepting new connections (5-second timeout)
+- SSE streams detect client disconnects and abort LLM generation
+
+### 5.4 Domain-Aware RAG Prompts
+
+The RAG system prompt is selected based on the active index domain:
 - **Westpac**: Financial products, regulatory requirements, risk management vocabulary
 - **ServicesAustralia**: Government payments, eligibility criteria, entitlements vocabulary
 - Shared rules: cite sources with `[Source N]`, acknowledge uncertainty, avoid speculation
 
-### 6.4 Graceful Server Shutdown
+### 5.5 Feedback-Weighted Memory Retrieval
 
-The web server handles SIGTERM and SIGINT signals for clean shutdown:
-- Stops accepting new connections
-- Waits for active connections to close (5-second timeout)
-- SSE streams detect client disconnects and abort LLM generation
-
-### 6.5 Debug Logging
-
-When `GROVER_DEBUG=1`, the system logs additional diagnostic information:
-- LLM SSE parsing errors in `client.js`
-- Query rewrite failures in `query-rewrite.js`
-- Memory file parse errors in `stats.js`
-
-### 6.6 Memory Optimization
-
-- **Conversation memory cap**: `MAX_MEMORIES = 200` with oldest-first eviction prevents unbounded growth
-- **Cached Float32Arrays**: Embeddings loaded from JSON are cached as `Float32Array` on the memory object, avoiding repeated conversion during similarity search
-- **Streaming embeddings**: During ingestion, embeddings are written to binary temp files instead of accumulating in JS heap
-- **Absolute paths**: `config.js` uses `PROJECT_ROOT` for all paths, ensuring correct resolution regardless of working directory
-
-### 6.7 Category Inference and Graph Cleanup
-
-- **Filename-based inference**: 4-tier system (form codes, language detection, keyword rules, medical patterns) classifies documents into 33 SA categories
-- **Retroactive reassignment**: `viz-builder.js` reclassifies documents from `general` to inferred categories at serve time, even for graphs built before the inference logic existed
-- **Brand/category deduplication**: merges legacy brand nodes that duplicate category nodes (artifact of SA_BRANDS being emptied after initial ingestion)
-- **Hub suppression**: skips rendering `category:general` if it still has >50 documents after inference
-
-### 6.8 Feedback-Weighted Memory Retrieval
-
-Memory retrieval now weights cosine similarity by quality score:
-- `score = cosineSimilarity × min(perMemoryQuality, sharedFeedbackQuality)`
+Memory retrieval weights HNSW similarity by quality score:
+- `score = (1 - hnswDistance) × min(perMemoryQuality, sharedFeedbackQuality)`
 - Negative feedback categories map to quality: wrong+wrong=0.1, wrong+right=0.3, right+wrong=0.5, incomplete=0.6
-- Past interactions with negative feedback include an annotation in the LLM context warning against repeating the same issues
+- Past interactions with negative feedback include an annotation in the LLM context
+
+### 5.6 Category Inference and Graph Cleanup
+
+- **Filename-based inference**: 4-tier system classifies documents into 33 SA categories
+- **Retroactive reassignment**: `viz-builder.js` reclassifies documents from `general` at serve time
+- **Brand/category deduplication**: merges legacy brand nodes that duplicate category nodes
+- **Hub suppression**: skips rendering `category:general` if it has >50 documents after inference

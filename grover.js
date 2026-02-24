@@ -46,7 +46,10 @@ switch (cmd) {
     break;
   }
   case 'stats':
-    require('./src/commands/stats').stats(indexName);
+    require('./src/commands/stats').stats(indexName).catch(console.error);
+    break;
+  case 'bootstrap':
+    require('./src/commands/bootstrap').bootstrap(args[0]).catch(console.error);
     break;
   default:
     console.log(`
@@ -60,12 +63,14 @@ Commands:
   interactive         Interactive mode — RAG if LLM configured (alias: i)
   serve [port]        Web UI with graph visualization + chat (alias: web)
   stats               Show index and graph statistics
+  bootstrap [file]    Restore database from seed dump (default: config/grover-seed.dump)
 
 Options:
   --index <name>      Use a named index (e.g. Westpac, ServicesAustralia)
                       Corpus: ./corpus/<name>/  Index: ./index/<name>/
 
 Environment:
+  DATABASE_URL        PostgreSQL connection string (default: postgres://grover:grover@localhost:5432/grover)
   OPENAI_API_KEY      Required for RAG (ask command and interactive mode)
   OPENAI_BASE_URL     Override API endpoint (default: https://api.openai.com/v1)
   LLM_MODEL           Override model (default: gpt-4o-mini)

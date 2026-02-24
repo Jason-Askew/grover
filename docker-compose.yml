@@ -1,4 +1,24 @@
 services:
+  postgres:
+    image: ruvnet/ruvector-postgres:latest
+    environment:
+      POSTGRES_USER: grover
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-grover}
+      POSTGRES_DB: grover
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./config/init.sql:/docker-entrypoint-initdb.d/02-grover-init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U grover -d grover"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - grover-net
+    restart: unless-stopped
+
   grover:
     build: .
     ports:
@@ -8,11 +28,14 @@ services:
       KEYCLOAK_URL: http://keycloak:8080
       KEYCLOAK_PUBLIC_URL: http://localhost:8080
       CORS_ORIGIN: http://localhost:3000
+      DATABASE_URL: postgres://grover:${POSTGRES_PASSWORD:-grover}@postgres:5432/grover
     volumes:
       - ./corpus:/app/corpus:ro
       - ./index:/app/index
       - ./config:/app/config:ro
     depends_on:
+      postgres:
+        condition: service_healthy
       keycloak:
         condition: service_healthy
     networks:
@@ -25,6 +48,10 @@ services:
     environment:
       KEYCLOAK_ADMIN: admin
       KEYCLOAK_ADMIN_PASSWORD: admin
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://postgres:5432/keycloak
+      KC_DB_USERNAME: keycloak
+      KC_DB_PASSWORD: ${POSTGRES_PASSWORD:-grover}
     ports:
       - "8080:8080"
     volumes:
@@ -35,6 +62,9 @@ services:
       timeout: 5s
       start_period: 90s
       retries: 10
+    depends_on:
+      postgres:
+        condition: service_healthy
     networks:
       - grover-net
     restart: unless-stopped
@@ -42,3 +72,6 @@ services:
 networks:
   grover-net:
     driver: bridge
+
+volumes:
+  postgres_data:

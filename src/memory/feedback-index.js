@@ -1,29 +1,9 @@
-const fs = require('fs');
-const path = require('path');
 const crypto = require('crypto');
+const db = require('../persistence/db');
 
 class FeedbackIndex {
-  constructor(indexDir) {
-    this._indexDir = indexDir;
-    this._file = path.join(indexDir, 'feedback-index.json');
-    this._data = {};
-    this._load();
-  }
-
-  _load() {
-    if (fs.existsSync(this._file)) {
-      try {
-        this._data = JSON.parse(fs.readFileSync(this._file, 'utf-8'));
-      } catch (e) {
-        console.log(`  Feedback index load error: ${e.message}`);
-        this._data = {};
-      }
-    }
-  }
-
-  _save() {
-    if (!fs.existsSync(this._indexDir)) fs.mkdirSync(this._indexDir, { recursive: true });
-    fs.writeFileSync(this._file, JSON.stringify(this._data, null, 2));
+  constructor() {
+    // No file I/O needed — PostgreSQL-backed
   }
 
   /**
@@ -42,53 +22,59 @@ class FeedbackIndex {
   /**
    * Record feedback into the shared index.
    */
-  record(key, type, category, comment, userId, query) {
-    if (!this._data[key]) {
-      this._data[key] = { quality: 1.0, feedbacks: [] };
-    }
-
-    const entry = this._data[key];
-    entry.feedbacks.push({
+  async record(key, type, category, comment, userId, query) {
+    const feedbackEntry = {
       type,
       category: category || null,
       comment: comment || null,
       userId: userId || null,
       query: query || null,
       timestamp: new Date().toISOString(),
-    });
+    };
 
-    // Recompute quality from all feedbacks
-    if (type === 'positive') {
-      // Positive feedback doesn't degrade quality
-    } else if (category) {
-      const qualityMap = {
-        'wrong-answer-wrong-docs': 0.1,
-        'wrong-answer-right-docs': 0.3,
-        'right-answer-wrong-docs': 0.5,
-        'incomplete-answer': 0.6,
-      };
-      const newQuality = qualityMap[category] ?? 0.3;
-      entry.quality = Math.min(entry.quality, newQuality);
-    } else {
-      entry.quality = Math.min(entry.quality, 0.3);
+    // Compute new quality based on feedback type
+    let qualityPenalty = 1.0;
+    if (type !== 'positive') {
+      if (category) {
+        const qualityMap = {
+          'wrong-answer-wrong-docs': 0.1,
+          'wrong-answer-right-docs': 0.3,
+          'right-answer-wrong-docs': 0.5,
+          'incomplete-answer': 0.6,
+        };
+        qualityPenalty = qualityMap[category] ?? 0.3;
+      } else {
+        qualityPenalty = 0.3;
+      }
     }
 
-    this._save();
-    return entry.quality;
+    // Upsert: insert or append feedback and update quality
+    const { rows } = await db.query(
+      `INSERT INTO feedback (content_key, quality, feedbacks)
+       VALUES ($1, $2, $3::jsonb)
+       ON CONFLICT (content_key) DO UPDATE SET
+         feedbacks = feedback.feedbacks || $3::jsonb,
+         quality = LEAST(feedback.quality, $2)
+       RETURNING quality`,
+      [key, qualityPenalty, JSON.stringify([feedbackEntry])]
+    );
+
+    return rows[0].quality;
   }
 
   /**
    * Get the shared quality score for a content key, or null if unknown.
    */
-  getQuality(key) {
-    const entry = this._data[key];
-    return entry ? entry.quality : null;
+  async getQuality(key) {
+    const { rows } = await db.query(
+      'SELECT quality FROM feedback WHERE content_key = $1', [key]
+    );
+    return rows.length > 0 ? rows[0].quality : null;
   }
 
-  stats() {
-    return {
-      entries: Object.keys(this._data).length,
-    };
+  async stats() {
+    const { rows } = await db.query('SELECT count(*) FROM feedback');
+    return { entries: parseInt(rows[0].count, 10) };
   }
 }
 

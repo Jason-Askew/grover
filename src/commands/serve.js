@@ -2,10 +2,10 @@ const rv = require('ruvector');
 const fs = require('fs');
 const path = require('path');
 const http = require('http');
-const { ReasoningBank, SonaCoordinator } = require('@ruvector/ruvllm');
 const { PollyClient, SynthesizeSpeechCommand } = require('@aws-sdk/client-polly');
-const { LLM_MODEL, LLM_BASE_URL, POLLY_REGION, POLLY_VOICE, POLLY_ENGINE, CORS_ORIGIN, SESSION_FILE, resolveIndex, listIndexes } = require('../config');
-const { loadIndex, loadIndexWithFallback } = require('../persistence/index-persistence');
+const { LLM_MODEL, LLM_BASE_URL, POLLY_REGION, POLLY_VOICE, POLLY_ENGINE, CORS_ORIGIN, resolveIndex, listIndexesPg } = require('../config');
+const { initDb, closePool } = require('../persistence/db');
+const { loadIndex } = require('../persistence/index-persistence');
 const { retrieve } = require('../retrieval/retrieve');
 const { ragAnswer, ragAnswerStream } = require('../llm/rag');
 const { FeedbackIndex } = require('../memory/feedback-index');
@@ -13,53 +13,49 @@ const { ChatManager } = require('../memory/chat-manager');
 const { buildVizData } = require('../server/viz-builder');
 const { buildCitedVizPath } = require('../server/viz-path');
 const { getAuthConfig, initSessionStore, getSessionStore, handleAuthRoute, requireAuth, getSession } = require('../server/auth');
-const { openRvfStoreForQuery, closeRvfStore } = require('../persistence/rvf-store');
 const { handleAdminRoute } = require('../server/admin-api');
 const { UsageTracker } = require('../llm/usage-tracker');
 
 async function serve(port = 3000, indexName = null) {
-  const available = listIndexes();
+  // Verify PostgreSQL connection + ruvector extension
+  await initDb();
+
+  const available = await listIndexesPg();
   if (available.length === 0 && !indexName) {
     console.log('No indexes found. Run: node grover.js ingest --index <name>');
     return;
   }
 
   const activeName = indexName || available[0];
-  const paths = resolveIndex(activeName);
 
-  let index = loadIndexWithFallback(paths, activeName);
+  let index = await loadIndex(null, activeName);
   if (!index) {
     console.log(`No index found for "${activeName}". Run: node grover.js ingest --index ${activeName}`);
     return;
   }
 
   console.log(`Loading index "${activeName}": ${index.records.length} chunks, ${index.dim}d${index.graph ? ' + graph' : ''}`);
+  console.log(`  HNSW: active (PostgreSQL ruvector)`);
   await rv.initOnnxEmbedder();
 
   const authConfig = getAuthConfig();
-  if (authConfig) initSessionStore(SESSION_FILE);
-
-  // Open RVF HNSW store if available
-  let rvfStore = await openRvfStoreForQuery(paths.rvfFile);
-  if (rvfStore) console.log(`  HNSW: active (vectors.rvf)`);
-  else console.log(`  HNSW: inactive (brute-force search)`);
+  if (authConfig) await initSessionStore();
 
   // Mutable server state
   let currentName = activeName;
   let currentIndex = index;
-  let currentPaths = paths;
-  let feedbackIndex = new FeedbackIndex(paths.indexDir);
+  let feedbackIndex = new FeedbackIndex();
   let currentVizData = buildVizData(currentIndex.graph);
-  const usageTracker = new UsageTracker(path.join(paths.indexDir, 'usage-stats.json'));
+  const usageTracker = new UsageTracker();
 
-  // Per-user chat managers (keyed by userId)
+  // Per-user chat managers (keyed by indexName:userId)
   const userChatManagers = new Map();
 
-  function getUserChatManager(userId) {
-    const key = userId || '_anonymous';
+  async function getUserChatManager(userId) {
+    const key = `${currentName}:${userId || '_anonymous'}`;
     if (userChatManagers.has(key)) return userChatManagers.get(key);
-    const mgr = new ChatManager(currentPaths.indexDir, key, feedbackIndex);
-    mgr.load();
+    const mgr = new ChatManager(currentName, userId || '_anonymous', feedbackIndex);
+    await mgr.load();
     userChatManagers.set(key, mgr);
     return mgr;
   }
@@ -126,7 +122,7 @@ async function serve(port = 3000, indexName = null) {
       html = html.replace('tryLoadData();', `initGraph(${dataJson});document.getElementById('loading').classList.add('hidden');`);
 
       if (authConfig) {
-        const user = getSession(req);
+        const user = await getSession(req);
         if (user) {
           const isAdmin = Array.isArray(user.roles) && user.roles.includes('admin');
           const userScript = `<script>window.__USER__ = ${JSON.stringify({ name: user.name, email: user.email, isAdmin })};</script>`;
@@ -146,11 +142,17 @@ async function serve(port = 3000, indexName = null) {
 
     // ── Index listing ──
     if (req.method === 'GET' && url.pathname === '/api/indexes') {
-      const indexes = listIndexes().map(name => {
-        const p = resolveIndex(name);
-        const idx = loadIndexWithFallback(p, name);
-        return { name, chunks: idx ? idx.records.length : 0, hasGraph: idx ? !!idx.graph : false, active: name === currentName };
-      });
+      const names = await listIndexesPg();
+      const indexes = [];
+      for (const name of names) {
+        const idx = await loadIndex(null, name);
+        indexes.push({
+          name,
+          chunks: idx ? idx.records.length : 0,
+          hasGraph: idx ? !!idx.graph : false,
+          active: name === currentName,
+        });
+      }
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(indexes));
       return;
@@ -162,16 +164,12 @@ async function serve(port = 3000, indexName = null) {
       try {
         const { index: newName } = JSON.parse(body);
         if (!newName) { res.writeHead(400, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'Missing index name' })); return; }
-        const newPaths = resolveIndex(newName);
-        const newIndex = loadIndexWithFallback(newPaths, newName);
+        const newIndex = await loadIndex(null, newName);
         if (!newIndex) { res.writeHead(404, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: `Index "${newName}" not found` })); return; }
 
-        // Close old RVF store before switching
-        if (rvfStore) { await closeRvfStore(rvfStore); rvfStore = null; }
-
-        currentName = newName; currentIndex = newIndex; currentPaths = newPaths;
-        rvfStore = await openRvfStoreForQuery(newPaths.rvfFile);
-        feedbackIndex = new FeedbackIndex(newPaths.indexDir);
+        currentName = newName;
+        currentIndex = newIndex;
+        feedbackIndex = new FeedbackIndex();
         userChatManagers.clear();
         currentVizData = buildVizData(currentIndex.graph);
         console.log(`[switch] Now using index "${currentName}": ${currentIndex.records.length} chunks`);
@@ -183,17 +181,18 @@ async function serve(port = 3000, indexName = null) {
 
     // ── Chat management ──
     if (url.pathname === '/api/chats') {
-      const user = requireAuth(req, res, authConfig);
+      const user = await requireAuth(req, res, authConfig);
       if (!user) return;
-      const mgr = getUserChatManager(user.userId);
+      const mgr = await getUserChatManager(user.userId);
 
       if (req.method === 'GET') {
+        const chats = await mgr.listChats();
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ chats: mgr.listChats(), activeChatId: mgr.getActiveChatId() }));
+        res.end(JSON.stringify({ chats, activeChatId: mgr.getActiveChatId() }));
         return;
       }
       if (req.method === 'POST') {
-        const chat = mgr.createChat();
+        const chat = await mgr.createChat();
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ chat, activeChatId: chat.id }));
         return;
@@ -201,7 +200,7 @@ async function serve(port = 3000, indexName = null) {
       if (req.method === 'DELETE') {
         const chatId = url.searchParams.get('id');
         if (!chatId) { res.writeHead(400, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'Missing id' })); return; }
-        mgr.deleteChat(chatId);
+        await mgr.deleteChat(chatId);
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: true, activeChatId: mgr.getActiveChatId() }));
         return;
@@ -209,58 +208,59 @@ async function serve(port = 3000, indexName = null) {
     }
 
     if (req.method === 'POST' && url.pathname === '/api/chats/rename') {
-      const user = requireAuth(req, res, authConfig);
+      const user = await requireAuth(req, res, authConfig);
       if (!user) return;
       const body = await readBody(req);
       const { chatId, title } = JSON.parse(body);
       if (!chatId || typeof title !== 'string') { res.writeHead(400, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'Missing chatId or title' })); return; }
-      const mgr = getUserChatManager(user.userId);
-      if (!mgr.renameChat(chatId, title.trim())) { res.writeHead(404, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'Chat not found' })); return; }
+      const mgr = await getUserChatManager(user.userId);
+      if (!(await mgr.renameChat(chatId, title.trim()))) { res.writeHead(404, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'Chat not found' })); return; }
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ ok: true }));
       return;
     }
 
     if (req.method === 'POST' && url.pathname === '/api/chats/switch') {
-      const user = requireAuth(req, res, authConfig);
+      const user = await requireAuth(req, res, authConfig);
       if (!user) return;
       const body = await readBody(req);
       const { chatId } = JSON.parse(body);
-      const mgr = getUserChatManager(user.userId);
-      if (!mgr.setActiveChatId(chatId)) { res.writeHead(404, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'Chat not found' })); return; }
+      const mgr = await getUserChatManager(user.userId);
+      if (!(await mgr.setActiveChatId(chatId))) { res.writeHead(404, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'Chat not found' })); return; }
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ ok: true, chatId }));
       return;
     }
 
     if (req.method === 'GET' && url.pathname === '/api/chats/history') {
-      const user = requireAuth(req, res, authConfig);
+      const user = await requireAuth(req, res, authConfig);
       if (!user) return;
       const chatId = url.searchParams.get('chatId');
-      const mgr = getUserChatManager(user.userId);
+      const mgr = await getUserChatManager(user.userId);
       const memory = chatId ? mgr.getMemory(chatId) : mgr.getActiveMemory();
+      const history = await memory.getRecentHistory(200);
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ history: memory.getRecentHistory(200) }));
+      res.end(JSON.stringify({ history }));
       return;
     }
 
     // ── Ask (non-streaming) ──
     if (req.method === 'POST' && url.pathname === '/api/ask') {
-      const user = requireAuth(req, res, authConfig);
+      const user = await requireAuth(req, res, authConfig);
       if (!user) return;
-      const mgr = getUserChatManager(user.userId);
+      const mgr = await getUserChatManager(user.userId);
       const body = await readBody(req);
       try {
         const { query, chatId } = JSON.parse(body);
         if (!query) { res.writeHead(400, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'Missing query' })); return; }
         const cid = chatId || mgr.getActiveChatId();
         const memory = mgr.getMemory(cid);
-        mgr.autoTitle(cid, query);
-        mgr.touchChat(cid);
+        await mgr.autoTitle(cid, query);
+        await mgr.touchChat(cid);
         console.log(`[ask][${currentName}][${user.userId}] ${query}`);
-        const { results, path: graphPath, mode, queryVec } = await retrieve(query, currentIndex, { k: 8, graphMode: true, memory, rvfStore });
+        const { results, path: graphPath, mode, queryVec } = await retrieve(query, currentIndex, { k: 8, graphMode: true, memory, indexName: currentName });
         const { answer, sources, memoryId, usage } = await ragAnswer(query, results, memory, { stream: false, queryVec, domain: currentName });
-        usageTracker.record(user.userId, LLM_MODEL, usage);
+        await usageTracker.record(user.userId, LLM_MODEL, usage);
         const vizPath = buildCitedVizPath(currentIndex.graph, sources, currentVizData);
         if (vizPath) console.log(`  Path: ${vizPath.nodes.length} nodes, ${vizPath.edges.length} edges`);
         res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -274,19 +274,19 @@ async function serve(port = 3000, indexName = null) {
 
     // ── Ask (streaming) ──
     if (req.method === 'POST' && url.pathname === '/api/ask-stream') {
-      const user = requireAuth(req, res, authConfig);
+      const user = await requireAuth(req, res, authConfig);
       if (!user) return;
-      const mgr = getUserChatManager(user.userId);
+      const mgr = await getUserChatManager(user.userId);
       const body = await readBody(req);
       try {
         const { query, chatId } = JSON.parse(body);
         if (!query) { res.writeHead(400, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'Missing query' })); return; }
         const cid = chatId || mgr.getActiveChatId();
         const memory = mgr.getMemory(cid);
-        mgr.autoTitle(cid, query);
-        mgr.touchChat(cid);
+        await mgr.autoTitle(cid, query);
+        await mgr.touchChat(cid);
         console.log(`[ask-stream][${currentName}][${user.userId}] ${query}`);
-        const { results, path: graphPath, mode, queryVec } = await retrieve(query, currentIndex, { k: 8, graphMode: true, memory, rvfStore });
+        const { results, path: graphPath, mode, queryVec } = await retrieve(query, currentIndex, { k: 8, graphMode: true, memory, indexName: currentName });
 
         res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', 'Connection': 'keep-alive' });
         const sources = results.map((r, i) => ({
@@ -301,7 +301,7 @@ async function serve(port = 3000, indexName = null) {
         const { answer, memoryId, usage } = await ragAnswerStream(query, results, memory, (token) => {
           if (!clientDisconnected) res.write(`event: token\ndata: ${JSON.stringify(token)}\n\n`);
         }, { queryVec, domain: currentName });
-        usageTracker.record(user.userId, LLM_MODEL, usage);
+        await usageTracker.record(user.userId, LLM_MODEL, usage);
 
         const vizPath = buildCitedVizPath(currentIndex.graph, sources, currentVizData);
         res.write(`event: done\ndata: ${JSON.stringify({ path: vizPath, mode, memoryId })}\n\n`);
@@ -348,14 +348,21 @@ async function serve(port = 3000, indexName = null) {
 
     // ── Memory listing ──
     if (req.method === 'GET' && url.pathname === '/api/memory') {
-      const user = requireAuth(req, res, authConfig);
+      const user = await requireAuth(req, res, authConfig);
       if (!user) return;
-      const mgr = getUserChatManager(user.userId);
+      const mgr = await getUserChatManager(user.userId);
       const chatId = url.searchParams.get('chatId');
       const memory = chatId ? mgr.getMemory(chatId) : mgr.getActiveMemory();
-      const memories = (memory.memories || []).map(m => ({
+      // Fetch memories from PG
+      const dbMem = require('../persistence/db');
+      const { rows } = await dbMem.query(
+        `SELECT id, query, answer, sources, created_at AS timestamp, quality, feedback
+         FROM memories WHERE chat_id = $1 ORDER BY created_at DESC`,
+        [chatId || mgr.getActiveChatId()]
+      );
+      const memories = rows.map(m => ({
         id: m.id, query: m.query, answer: m.answer, sources: m.sources,
-        timestamp: m.timestamp, quality: m.quality, feedback: m.feedback || null,
+        timestamp: m.timestamp?.toISOString(), quality: m.quality, feedback: m.feedback || null,
       }));
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ memories }));
@@ -364,15 +371,15 @@ async function serve(port = 3000, indexName = null) {
 
     // ── Feedback ──
     if (req.method === 'POST' && url.pathname === '/api/feedback') {
-      const user = requireAuth(req, res, authConfig);
+      const user = await requireAuth(req, res, authConfig);
       if (!user) return;
-      const mgr = getUserChatManager(user.userId);
+      const mgr = await getUserChatManager(user.userId);
       const body = await readBody(req);
       try {
         const { memoryId, type, category, comment, chatId } = JSON.parse(body);
         if (!memoryId || !type) { res.writeHead(400, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'Missing memoryId or type' })); return; }
         const memory = chatId ? mgr.getMemory(chatId) : mgr.getActiveMemory();
-        const quality = memory.recordFeedback(memoryId, type, category || null, comment || null);
+        const quality = await memory.recordFeedback(memoryId, type, category || null, comment || null);
         if (quality === null) { res.writeHead(404, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'Memory not found' })); return; }
         console.log(`[feedback][${currentName}][${user.userId}] ${memoryId} → ${type}${category ? ' (' + category + ')' : ''} quality=${quality}`);
         res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -383,15 +390,16 @@ async function serve(port = 3000, indexName = null) {
 
     // ── Forget (clear active chat) ──
     if (req.method === 'POST' && url.pathname === '/api/forget') {
-      const user = requireAuth(req, res, authConfig);
+      const user = await requireAuth(req, res, authConfig);
       if (!user) return;
-      const mgr = getUserChatManager(user.userId);
+      const mgr = await getUserChatManager(user.userId);
       let chatId;
       try { const body = await readBody(req); chatId = JSON.parse(body).chatId; } catch (e) { /* no body is fine */ }
-      const memory = chatId ? mgr.getMemory(chatId) : mgr.getActiveMemory();
-      memory.history = []; memory.memories = [];
-      memory.reasoningBank = new ReasoningBank(); memory.sona = new SonaCoordinator();
-      memory.save();
+      const cid = chatId || mgr.getActiveChatId();
+      // Delete all memories and messages for this chat
+      const dbMod = require('../persistence/db');
+      await dbMod.query('DELETE FROM memories WHERE chat_id = $1', [cid]);
+      await dbMod.query('DELETE FROM chat_messages WHERE chat_id = $1', [cid]);
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ ok: true }));
       return;
@@ -412,8 +420,10 @@ async function serve(port = 3000, indexName = null) {
 
   function shutdown() {
     console.log('\nShutting down server...');
-    if (authConfig) getSessionStore().shutdown();
-    if (rvfStore) closeRvfStore(rvfStore).catch(() => {});
+    const promises = [];
+    if (authConfig) promises.push(getSessionStore().shutdown());
+    promises.push(closePool());
+    Promise.all(promises).catch(() => {});
     server.close(() => { console.log('Server closed.'); process.exit(0); });
     setTimeout(() => process.exit(1), 5000);
   }
