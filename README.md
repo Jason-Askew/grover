@@ -80,6 +80,9 @@ export AUTH_SESSION_TTL=86400000         # default: 24h in ms
 export KEYCLOAK_ADMIN_USER=admin         # for admin panel user management
 export KEYCLOAK_ADMIN_PASSWORD=admin
 
+# Optional: API key for external service-to-service calls (bypasses Keycloak)
+export GROVER_API_KEY=my-secret-key
+
 # Optional: CORS
 export CORS_ORIGIN=http://localhost:3000
 
@@ -320,6 +323,27 @@ The web server exposes these endpoints:
 | POST | `/api/tts` | Text-to-speech via Amazon Polly (returns base64 MP3) |
 | POST | `/api/forget` | Clear conversation memory for the active chat |
 | POST | `/api/feedback` | Record thumbs up/down feedback on a memory entry |
+
+### API Key Authentication
+
+For external service-to-service integrations, set `GROVER_API_KEY` to enable Bearer token authentication. This bypasses the Keycloak OIDC flow while still providing per-caller memory isolation via the `X-Grover-User` header.
+
+```bash
+# Basic API key call
+curl -X POST http://localhost:3000/api/ask \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer my-secret-key" \
+  -d '{"query": "What is JobSeeker?"}'
+
+# With user isolation (separate memory per caller)
+curl -X POST http://localhost:3000/api/ask \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer my-secret-key" \
+  -H "X-Grover-User: my-external-app" \
+  -d '{"query": "What is JobSeeker?"}'
+```
+
+When `X-Grover-User` is omitted, all API key calls share a default `_api` user identity. Each unique user ID gets its own chat history and conversation memory.
 
 ### Chat Management
 

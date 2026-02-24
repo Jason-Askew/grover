@@ -411,7 +411,7 @@ Keycloak OIDC authentication module. Sessions are PostgreSQL-backed via `Session
 | `validateIdToken(idToken, config)` | Validates JWT against Keycloak's JWKS endpoint. Returns `{ sub, email, name, roles }`. |
 | `createSession(userId, email, name, roles, ttl)` | Async. Creates a session via `getSessionStore().set()`. Returns session ID. |
 | `getSession(req)` | Async. Looks up session from `grover_session` cookie. Checks TTL, deletes expired. |
-| `requireAuth(req, res, config)` | Async middleware. Returns user object, or sends 401 and returns null. |
+| `requireAuth(req, res, config)` | Async middleware. Checks (in order): (1) if auth disabled, returns anonymous user; (2) if `GROVER_API_KEY` set and `Authorization: Bearer <key>` matches, returns API user with `userId` from `X-Grover-User` header (default `_api`); (3) session cookie lookup. Returns user object, or sends 401 and returns null. |
 | `requireAdmin(req, res, config)` | Async middleware. Checks for `admin` role. Returns user or sends 401/403. |
 | `handleAuthRoute(req, res, config)` | Async route handler for auth endpoints. |
 

@@ -231,6 +231,16 @@ async function requireAuth(req, res, config) {
     return { userId: '_anonymous', email: '', name: '' };
   }
 
+  // API key authentication (for external service-to-service calls)
+  const apiKey = process.env.GROVER_API_KEY;
+  if (apiKey) {
+    const authHeader = req.headers.authorization;
+    if (authHeader && authHeader.startsWith('Bearer ') && authHeader.slice(7) === apiKey) {
+      const userId = req.headers['x-grover-user'] || '_api';
+      return { userId, email: '', name: userId, roles: [] };
+    }
+  }
+
   const user = await getSession(req);
   if (!user) {
     res.writeHead(401, { 'Content-Type': 'application/json' });
