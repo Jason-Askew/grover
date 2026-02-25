@@ -9,6 +9,7 @@ services:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+      - ./config/01-keycloak-db.sh:/docker-entrypoint-initdb.d/01-keycloak-db.sh
       - ./config/init.sql:/docker-entrypoint-initdb.d/02-grover-init.sql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U grover -d grover"]
@@ -22,12 +23,12 @@ services:
   grover:
     build: .
     ports:
-      - "3000:3000"
+      - "${GROVER_PORT:-3000}:3000"
     env_file: .env
     environment:
       KEYCLOAK_URL: http://keycloak:8080
-      KEYCLOAK_PUBLIC_URL: http://localhost:8080
-      CORS_ORIGIN: http://localhost:3000
+      KEYCLOAK_PUBLIC_URL: ${KEYCLOAK_PUBLIC_URL:-http://localhost:8080}
+      CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:3000}
       DATABASE_URL: postgres://grover:${POSTGRES_PASSWORD:-grover}@postgres:5432/grover
     volumes:
       - ./corpus:/app/corpus:ro
@@ -46,14 +47,14 @@ services:
     image: quay.io/keycloak/keycloak:24.0
     command: start-dev --import-realm --health-enabled=true
     environment:
-      KEYCLOAK_ADMIN: admin
-      KEYCLOAK_ADMIN_PASSWORD: admin
+      KEYCLOAK_ADMIN: ${KEYCLOAK_ADMIN_USER:-admin}
+      KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:-admin}
       KC_DB: postgres
       KC_DB_URL: jdbc:postgresql://postgres:5432/keycloak
       KC_DB_USERNAME: keycloak
       KC_DB_PASSWORD: ${POSTGRES_PASSWORD:-grover}
     ports:
-      - "8080:8080"
+      - "${KEYCLOAK_PORT:-8080}:8080"
     volumes:
       - ./config/keycloak:/opt/keycloak/data/import
     healthcheck:

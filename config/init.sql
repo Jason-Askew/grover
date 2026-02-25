@@ -1,26 +1,8 @@
--- Grover PostgreSQL schema (runs as 02-grover-init.sql after ruvector extension init)
+-- Grover PostgreSQL schema (runs as 02-grover-init.sql after 01-keycloak-db.sh)
+-- Keycloak DB/user creation is handled by 01-keycloak-db.sh (needs env vars for password).
 
 -- Enable ruvector extension
 CREATE EXTENSION IF NOT EXISTS ruvector;
-
--- Create Keycloak database and user (separate from Grover)
-DO $$
-BEGIN
-  IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'keycloak') THEN
-    CREATE USER keycloak WITH PASSWORD 'grover';
-  END IF;
-END
-$$;
-
-SELECT 'CREATE DATABASE keycloak'
-WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'keycloak')\gexec
-
-GRANT ALL PRIVILEGES ON DATABASE keycloak TO keycloak;
-
--- Grant schema permissions (required for PostgreSQL 15+)
-\connect keycloak
-GRANT ALL ON SCHEMA public TO keycloak;
-\connect grover
 
 -- Documents table
 CREATE TABLE documents (
