@@ -35,6 +35,10 @@ S3_KEY="s3://${BUCKET}/${PREFIX}/grover-${DATE}.dump"
 aws s3 cp "$DUMP_FILE" "$S3_KEY" --quiet
 echo "[$(date)] Uploaded to ${S3_KEY}"
 
+# Also overwrite the latest seed dump
+aws s3 cp "$DUMP_FILE" "s3://${BUCKET}/dumps/grover-seed.dump" --quiet
+echo "[$(date)] Updated seed at s3://${BUCKET}/dumps/grover-seed.dump"
+
 # Clean up local dump
 rm -f "$DUMP_FILE"
 
