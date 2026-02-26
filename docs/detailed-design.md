@@ -6,6 +6,19 @@
 
 ```
 grover.js                          CLI dispatcher
+config/
+├── init.sql                       PostgreSQL schema (runs on fresh volume)
+├── grover-seed.dump               Pre-built database dump for bootstrapping
+├── grover.service                 systemd unit for Docker Compose auto-start
+├── Caddyfile                      Caddy reverse proxy template (HTTPS + Let's Encrypt)
+├── 01-keycloak-db.sh              Docker entrypoint: create Keycloak database
+└── keycloak/                      Keycloak realm import
+scripts/
+├── aws-deploy.sh                  Provision EC2 Spot instance (SG, key pair, EIP)
+├── aws-setup-instance.sh          Full instance setup (Docker, Caddy, .env, systemd, cron)
+├── aws-backup.sh                  Daily pg_dump to S3 with retention
+├── s3-sync.sh                     Push/pull corpus + seed dumps to/from S3
+└── crawl-sa.js                    Services Australia web crawler
 src/
 ├── config.js                      File paths, env vars, DATABASE_URL, Keycloak config
 ├── domain-constants.js            Westpac financial domain vocabulary
@@ -605,7 +618,7 @@ One row per index. The graph is rebuilt on each full ingest and saved separately
 {
   "answer": "A forward contract is... [Source 1]...",
   "sources": [
-    {"index": 1, "file": "Westpac/wbc/fx/WBC-FXSwapPDS.pdf", "pageStart": 6, "pageEnd": 6, "score": 0.15}
+    {"index": 1, "file": "Westpac/wbc/fx/WBC-FXSwapPDS.pdf", "url": "", "pageStart": 6, "pageEnd": 6, "score": 0.15}
   ],
   "path": {
     "nodes": ["doc:Westpac/wbc/fx/WBC-FXSwapPDS.pdf", "brand:wbc", "category:fx"],
@@ -729,3 +742,28 @@ Memory retrieval weights HNSW similarity by quality score:
 - **Retroactive reassignment**: `viz-builder.js` reclassifies documents from `general` at serve time
 - **Brand/category deduplication**: merges legacy brand nodes that duplicate category nodes
 - **Hub suppression**: skips rendering `category:general` if it has >50 documents after inference
+
+### 5.7 AWS Deployment Scripts
+
+Production deployment uses four shell scripts:
+
+| Script | Purpose | Key Operations |
+|--------|---------|----------------|
+| `scripts/aws-deploy.sh` | Provision EC2 Spot instance | Creates security group (22/80/443), key pair, Spot request, Elastic IP |
+| `scripts/aws-setup-instance.sh` | Configure instance | Installs Docker + Caddy, clones repo, generates `.env` with random passwords, pulls from S3, starts Docker Compose, configures systemd + backup cron |
+| `scripts/aws-backup.sh` | Daily database backup | `pg_dump -Fc` to S3 with configurable retention; also overwrites `dumps/grover-seed.dump` as latest seed |
+| `scripts/s3-sync.sh` | S3 data distribution | `push-corpus`, `pull-corpus`, `push-seed`, `pull-seed` subcommands using `aws s3 sync`/`cp` |
+
+Supporting config files:
+- `config/grover.service` — systemd oneshot unit that runs `docker compose up -d` on boot
+- `config/Caddyfile` — Caddy reverse proxy template with separate domains for Grover and Keycloak (Caddy handles Let's Encrypt TLS automatically)
+- `config/01-keycloak-db.sh` — Docker entrypoint script that creates the `keycloak` database and user in PostgreSQL
+
+Environment variables for deployment:
+
+| Variable | Used By | Description |
+|----------|---------|-------------|
+| `GROVER_S3_BUCKET` | `s3-sync.sh`, `aws-setup-instance.sh` | S3 bucket for corpus and seed distribution |
+| `GROVER_BACKUP_BUCKET` | `aws-backup.sh` | S3 bucket for daily backups |
+| `GROVER_BACKUP_PREFIX` | `aws-backup.sh` | S3 key prefix (default: `grover-backups`) |
+| `GROVER_BACKUP_RETAIN` | `aws-backup.sh` | Days to keep backups (default: 14) |

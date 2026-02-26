@@ -327,6 +327,65 @@ For local development without Docker, install PostgreSQL with the ruvector exten
 
 A `bootstrap` command is available to restore a pre-built database from a `pg_dump` seed file (`config/grover-seed.dump`). This skips ingestion entirely and populates the database in seconds: `node grover.js bootstrap` or `docker compose run --rm grover bootstrap`.
 
+### 7.1 AWS Deployment
+
+For production, Grover deploys to an EC2 Spot instance with Caddy reverse proxy (automatic HTTPS via Let's Encrypt) and systemd auto-start:
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  EC2 Instance (Ubuntu 24.04)                                │
+│                                                             │
+│  ┌──────────┐     ┌──────────────────────────────────────┐  │
+│  │  Caddy   │────▶│  Docker Compose                      │  │
+│  │  :443    │     │  ┌──────────┐ ┌─────────┐ ┌────────┐│  │
+│  │ (HTTPS)  │     │  │  Grover  │ │Keycloak │ │Postgres││  │
+│  └──────────┘     │  │  :3000   │ │ :8080   │ │ :5432  ││  │
+│                   │  └──────────┘ └─────────┘ └────────┘│  │
+│                   └──────────────────────────────────────┘  │
+│                                                             │
+│  systemd: grover.service (auto-start on boot)               │
+│  cron: aws-backup.sh (daily 2:00 AM UTC)                    │
+└─────────────────────────────────────────────────────────────┘
+         │                              │
+         ▼                              ▼
+   ┌───────────┐                ┌──────────────────┐
+   │ Elastic IP│                │   S3 Bucket      │
+   │ + DNS     │                │   corpus/        │
+   └───────────┘                │   dumps/         │
+                                └──────────────────┘
+```
+
+Deployment scripts:
+
+| Script | Purpose |
+|--------|---------|
+| `scripts/aws-deploy.sh` | Provisions EC2 Spot instance with security group, key pair, and Elastic IP |
+| `scripts/aws-setup-instance.sh` | Full instance setup: Docker, Caddy, git clone, `.env` generation, S3 pull, Docker Compose, systemd, backup cron |
+| `scripts/aws-backup.sh` | Daily `pg_dump` to S3 with configurable retention; also updates latest seed dump |
+| `scripts/s3-sync.sh` | Push/pull corpus files and database seed dumps to/from S3 |
+
+Configuration files:
+
+| File | Purpose |
+|------|---------|
+| `config/grover.service` | systemd unit for Docker Compose auto-start on boot |
+| `config/Caddyfile` | Caddy reverse proxy template (separate domains for app and Keycloak) |
+| `config/01-keycloak-db.sh` | Docker entrypoint script to create the Keycloak database in PostgreSQL |
+
+### 7.2 S3 Data Distribution
+
+Large binary files (PDFs, database dumps) are stored in S3 rather than git:
+
+```
+s3://$GROVER_S3_BUCKET/
+  corpus/                  Source PDFs and markdown files
+  dumps/
+    grover-seed.dump       Latest seed (overwritten on each daily backup)
+    $PREFIX/               Daily backups with retention policy
+```
+
+The `aws-setup-instance.sh` script automatically pulls corpus and seed from S3 during provisioning if `GROVER_S3_BUCKET` is set. The daily backup cron (`aws-backup.sh`) uploads each dump to the daily prefix and also overwrites the latest seed.
+
 ## 8. Operational Characteristics
 
 | Metric | Value |
@@ -344,6 +403,9 @@ A `bootstrap` command is available to restore a pre-built database from a `pg_du
 | SA vocabulary | ~55 payment types, ~74 government concepts |
 | Westpac vocabulary | 23 product types, 28 financial concepts, 4 brands, 4 categories |
 | Docker services | 3 (postgres, keycloak, grover) |
+| Reverse proxy | Caddy (automatic HTTPS via Let's Encrypt) |
+| Backup | Daily pg_dump to S3 with 14-day retention |
+| S3 sync | Corpus and seed dump distribution via `scripts/s3-sync.sh` |
 
 ## 9. PostgreSQL Schema Overview
 

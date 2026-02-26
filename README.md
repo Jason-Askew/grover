@@ -89,6 +89,14 @@ export CORS_ORIGIN=http://localhost:3000
 # Optional: custom LLM cost tracking
 export LLM_COST_PER_1K_INPUT=0.00015
 export LLM_COST_PER_1K_OUTPUT=0.0006
+
+# Optional: S3 data sync (corpus and seed dump distribution)
+export GROVER_S3_BUCKET=grover-data
+
+# Optional: automated daily S3 backup (used by scripts/aws-backup.sh)
+export GROVER_BACKUP_BUCKET=grover-data
+export GROVER_BACKUP_PREFIX=grover-backups    # default: grover-backups
+export GROVER_BACKUP_RETAIN=14                # days to keep, default: 14
 ```
 
 ## Docker
@@ -126,6 +134,62 @@ DATABASE_URL=postgres://grover:grover@localhost:5432/grover \
 ```
 
 The Docker image uses Node 22 (bookworm-slim) with Python 3 + pymupdf. All persistence is in PostgreSQL; the `./index` volume is only used for batch temp files during ingest.
+
+## AWS Deployment
+
+Grover includes scripts for deploying to AWS EC2 with Caddy (automatic HTTPS), systemd auto-start, S3 backup, and S3-based corpus/seed distribution.
+
+### Provision an EC2 instance
+
+```bash
+# Create EC2 Spot instance with security group, key pair, and Elastic IP
+./scripts/aws-deploy.sh --domain grover.example.com --key-name my-key
+
+# Options: --region, --instance-type, --volume-size, --arch (amd64|arm64)
+```
+
+### Set up the instance
+
+SSH into the instance and run:
+
+```bash
+./scripts/aws-setup-instance.sh \
+  --domain grover.example.com \
+  --repo git@github.com:user/grover.git
+
+# Options: --auth-domain, --branch, --skip-bootstrap
+```
+
+This installs Docker, Caddy, clones the repo, generates `.env` with random passwords, pulls corpus/seed from S3 (if `GROVER_S3_BUCKET` is set), starts Docker Compose, configures Caddy reverse proxy with automatic Let's Encrypt TLS, enables systemd auto-start, and sets up a daily backup cron.
+
+### S3 corpus and seed sync
+
+Large binary corpus files (PDFs) and database seed dumps are stored in S3 rather than git. Set `GROVER_S3_BUCKET` and use `scripts/s3-sync.sh`:
+
+```bash
+# Push local corpus to S3
+./scripts/s3-sync.sh push-corpus
+
+# Pull corpus from S3 (e.g. on a new EC2 instance)
+./scripts/s3-sync.sh pull-corpus
+
+# Create pg_dump and upload as seed
+./scripts/s3-sync.sh push-seed
+
+# Download seed dump to config/grover-seed.dump
+./scripts/s3-sync.sh pull-seed
+```
+
+### Daily backups
+
+`scripts/aws-backup.sh` runs via cron (configured by `aws-setup-instance.sh`). It dumps PostgreSQL to S3, prunes backups older than `GROVER_BACKUP_RETAIN` days (default 14), and updates the latest seed dump at `dumps/grover-seed.dump`.
+
+```bash
+# Environment variables (set in .env or crontab):
+GROVER_BACKUP_BUCKET=your-bucket    # S3 bucket for daily backups
+GROVER_BACKUP_PREFIX=grover-backups # S3 key prefix (default)
+GROVER_BACKUP_RETAIN=14             # days to keep (default)
+```
 
 ## Usage
 
@@ -383,10 +447,21 @@ When `X-Grover-User` is omitted, all API key calls share a default `_api` user i
 grover.js                  CLI dispatcher
 graph-viz.html             Graph visualization + chat panel (vis-network)
 docker-compose.yml         Full stack: PostgreSQL + Keycloak + Grover
+Dockerfile                 Multi-stage Docker build (Node 22 + Python 3 + pymupdf)
+.env.example               Template for environment variables (copy to .env)
 config/
   init.sql                 PostgreSQL schema (ruvector extension, HNSW indexes, all tables)
   grover-seed.dump         Pre-built database dump for bootstrapping (pg_dump custom format)
   keycloak/                Keycloak realm import
+  grover.service           systemd unit for Docker Compose auto-start
+  Caddyfile                Caddy reverse proxy template (HTTPS + Let's Encrypt)
+  01-keycloak-db.sh        Docker entrypoint script to create Keycloak database
+scripts/
+  aws-deploy.sh            Provision EC2 Spot instance (security group, key pair, EIP)
+  aws-setup-instance.sh    Full instance setup (Docker, Caddy, clone, .env, systemd, cron)
+  aws-backup.sh            Daily PostgreSQL backup to S3 with retention
+  s3-sync.sh               Push/pull corpus and seed dumps to/from S3
+  crawl-sa.js              Services Australia web crawler (populates corpus)
 corpus/                    Source documents per index
 index/                     Temp files during ingest only (batch_*.json, batch_*.emb)
 src/
@@ -429,8 +504,6 @@ src/
     serve.js               HTTP server with graph viz + chat + auth + admin
     stats.js               Index statistics reporter
 docs/                      Design documentation
-Dockerfile                 Multi-stage Docker build (Node 22 + Python 3 + pymupdf)
-.env.example               Template for environment variables (copy to .env)
 ```
 
 ## Design Documentation
