@@ -86,6 +86,13 @@ else
 fi
 cd "$HOME/grover"
 
+# Pull corpus and seed from S3 if bucket is configured
+if [[ -n "${GROVER_S3_BUCKET:-}" ]]; then
+  echo "  Pulling corpus and seed from S3..."
+  ./scripts/s3-sync.sh pull-corpus
+  ./scripts/s3-sync.sh pull-seed
+fi
+
 # ── 4. Create .env if missing ──
 echo "[4/6] Configuring environment..."
 if [[ ! -f .env ]]; then

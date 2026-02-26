@@ -9,3 +9,4 @@ sessions.json
 *.dump
 *.sql
 !config/init.sql
+corpus/**/*.pdf
