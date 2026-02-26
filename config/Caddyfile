@@ -1,0 +1,21 @@
+# Grover Caddy reverse proxy configuration.
+# Copy to /etc/caddy/Caddyfile and replace GROVER_DOMAIN / AUTH_DOMAIN with your actual domains.
+# Caddy handles Let's Encrypt TLS automatically.
+
+GROVER_DOMAIN {
+    reverse_proxy localhost:3000
+}
+
+AUTH_DOMAIN {
+    reverse_proxy localhost:8080
+}
+
+# Alternative: single domain with path routing (uncomment and replace above)
+# GROVER_DOMAIN {
+#     handle /auth/* {
+#         reverse_proxy localhost:8080
+#     }
+#     handle {
+#         reverse_proxy localhost:3000
+#     }
+# }

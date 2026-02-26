@@ -2,5 +2,10 @@ node_modules/
 ruvector.db
 .DS_Store
 .env
+.aws-deploy.json
 sessions.json
 *.rvf
+*.pem
+*.dump
+*.sql
+!config/init.sql
